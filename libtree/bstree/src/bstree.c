@@ -1,3 +1,21 @@
+/*
+ * bstree.c - source file of the BS tree implementation
+ * Copyright (C) 2010 Uladzislau Rezki (urezki@gmail.com)
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -199,8 +217,7 @@ bst_remove(bst_node **root, size_t key)
 	}
 
 free_and_leave:
-	free(victim);
-	victim = NULL;
+	free_bst_node(victim);
 	return 1;
 
 leave:
@@ -222,6 +239,45 @@ bst_lookup(bst_node *root, size_t key)
 	}
 
 	return NULL;
+}
+
+bst_node *
+alloc_bst_node(int sizeof_priv)
+{
+	struct bst_node *n = NULL;
+
+	n = (bst_node *) calloc(1, sizeof(bst_node));
+	if (n == NULL)
+		;
+
+	/* allocate place for private data */
+	if (sizeof_priv > 0) {
+		n->priv_data = calloc(1, sizeof_priv);
+		if (n->priv_data == NULL)
+			;
+	}
+
+	return n;
+}
+
+void
+free_bst_node(struct bst_node *n)
+{
+	if (n) {
+		if (n->priv_data) {
+			free(n->priv_data);
+			n->priv_data = NULL;
+		}
+
+		free(n);
+		n = NULL;
+	}
+}
+
+void *
+bst_node_priv(struct bst_node *n)
+{
+	return (n != NULL) ? n->priv_data : NULL;
 }
 
 static void
@@ -246,7 +302,7 @@ int main(int argc, char **argv)
 
 	fprintf(stdout, "build tree:\n");
 	for (i = 0; i < 10; i++) {
-		n = (bst_node *) calloc(1, sizeof(bst_node));
+		n = alloc_bst_node(0);
 
 		while (1) {
 			n->key = rand() % 10;
