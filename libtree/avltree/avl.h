@@ -16,3 +16,15 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#ifndef __AVL_H__
+#define __AVL_H__
+
+struct avl_node {
+	/* left, right, parent */
+	struct avl_node *link[3];
+	size_t key;
+	int height;
+	void *priv_data;
+};
+
+#endif	/* __AVL_H__ */
