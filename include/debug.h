@@ -1,6 +1,6 @@
 /*
- * avl.h - header file of the AVL tree implementation
- * Copyright (C) 2010 Uladzislau Rezki (urezki@gmail.com)
+ * debug.h - here is defined all debug related stuff
+ * Copyright (C) 2011 Uladzislau Rezki (urezki@gmail.com)
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -16,17 +16,8 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef __AVL_H__
-#define __AVL_H__
+#define BUG() *((char *) 0) = 0xff
+#define BUG_ON(cond) do { if (cond) BUG(); } while (0)
 
-struct avl_node {
-	/* left, right, parent */
-	struct avl_node *link[3];
-	size_t key;
-	int bf;
-	void *priv_data;
-};
-
-extern void avl_insert(struct avl_node **, struct avl_node *);
-
-#endif	/* __AVL_H__ */
+#define likely(x)   __builtin_expect((x), 1)
+#define unlikely(x) __builtin_expect((x), 0)
