@@ -16,8 +16,13 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#ifndef __DEBUG_H__
+#define __DEBUG_H__
+
 #define BUG() *((char *) 0) = 0xff
 #define BUG_ON(cond) do { if (cond) BUG(); } while (0)
 
 #define likely(x)   __builtin_expect((x), 1)
 #define unlikely(x) __builtin_expect((x), 0)
+
+#endif	/* __DEBUG_H__ */

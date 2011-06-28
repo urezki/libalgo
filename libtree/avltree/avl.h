@@ -28,5 +28,6 @@ struct avl_node {
 };
 
 extern void avl_insert(struct avl_node **, struct avl_node *);
+extern struct avl_node *avl_lookup(struct avl_node *, size_t);
 
 #endif	/* __AVL_H__ */

@@ -218,7 +218,6 @@ avl_double_left_pivot(struct avl_node **r)
 	/* take care about parent */
 	nr->link[2] = (*r)->link[2];
 
-
 	if (likely((*r)->link[2] != NULL)) {
 		if ((*r)->link[2]->link[0] == *r)
 			(*r)->link[2]->link[0] = nr;
@@ -233,22 +232,32 @@ avl_double_left_pivot(struct avl_node **r)
 }
 
 static void
-do_avl_rebalance(struct avl_node **ub_node)
+do_avl_rebalance(struct avl_node **r, struct avl_node *ub)
 {
-	if ((*ub_node)->bf < 0) {
-		if ((*ub_node)->link[0]->bf > 0) {
-			avl_double_right_pivot(ub_node);
+	int change_root = 0;
+
+	if (*r == ub)
+		change_root = 1;
+
+	if (ub->bf < 0) {
+		if (ub->link[0]->bf > 0) {
+			avl_double_right_pivot(&ub);
 		} else {
-			avl_right_pivot(ub_node);
+			avl_right_pivot(&ub);
 		}
-	} else if ((*ub_node)->bf > 0) {
-		if ((*ub_node)->link[1]->bf < 0) {
-			avl_double_left_pivot(ub_node);
+	} else if (ub->bf > 0) {
+		if (ub->link[1]->bf < 0) {
+			avl_double_left_pivot(&ub);
 		} else {
-			avl_left_pivot(ub_node);
+			avl_left_pivot(&ub);
 		}
 	} else {
 		BUG();
+	}
+
+	if (unlikely(change_root)) {
+		ub->link[2] = NULL;
+		*r = ub;		/* new root */
 	}
 }
 
@@ -348,21 +357,15 @@ avl_insert(struct avl_node **r, struct avl_node *n)
 	}
 
 	if (!rp->link[0] || !rp->link[1]) {
-		int change_root = 0;
-
 		ub = get_unbalanced_node(n, *r);
 		if (ub) {
-			if (*r == ub)
-				change_root = 1;
-
-			do_avl_rebalance(&ub);
-			if (unlikely(change_root)) {
-				ub->link[2] = NULL;
-				*r = ub;
-			}
+			/* r - can be reassigned */
+			do_avl_rebalance(r, ub);
 		}
 	} else {
-		/* balanced */
+		/*
+		 * parent of the inserted node is balanced
+		 */
 		rp->bf = 0;
 	}
 }
@@ -375,16 +378,24 @@ avl_remove()
 	
 }
 
-void
-avl_lookup()
+struct avl_node *
+avl_lookup(struct avl_node *root, size_t key)
 {
-	
-	
-	
+	while (root) {
+		if (key == root->key)
+			return root;
+
+		if (key > root->key) {
+			root = root->link[1];
+		} else {
+			root = root->link[0];
+		}
+	}
+
+	return NULL;
 }
 
 #ifdef TEST
-
 int main(int argc, char **argv)
 {
 	struct avl_node *root = NULL;
@@ -401,5 +412,4 @@ int main(int argc, char **argv)
 
 	return 0;
 }
-
 #endif	/* TEST */
