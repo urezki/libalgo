@@ -248,16 +248,22 @@ alloc_bst_node(int sizeof_priv)
 
 	n = (bst_node *) calloc(1, sizeof(bst_node));
 	if (n == NULL)
-		;
+		goto sys_error;
 
 	/* allocate place for private data */
 	if (sizeof_priv > 0) {
 		n->priv_data = calloc(1, sizeof_priv);
 		if (n->priv_data == NULL)
-			;
+			goto sys_error;
 	}
 
 	return n;
+
+sys_error:
+	if (n)
+		free(n);
+
+	return NULL;
 }
 
 void

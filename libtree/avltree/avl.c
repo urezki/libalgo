@@ -23,9 +23,10 @@
 /* locals */
 #include <avl.h>
 #include <debug.h>
-#include <timer.h>
 
 #ifdef TEST
+#include <timer.h>
+
 static void avl_dump_to_file(avl_node *n, const char *file);
 #endif
 
@@ -421,12 +422,13 @@ leave:
 }
 
 void
-avl_remove(struct avl_node **r, size_t key)
+avl_remove(struct avl_node **r, long key)
 {
 	struct avl_node *t = NULL;
 
 	t = avl_lookup(*r, key);
 	if (t) {
+#if 0
 		/* is not head */
 		if (t != *r) {
 			struct avl_node *l = t->link[0];
@@ -448,6 +450,7 @@ avl_remove(struct avl_node **r, size_t key)
 			 * remove the head of the tree
 			 */
 		}
+#endif
 	}
 }
 
@@ -455,7 +458,7 @@ avl_remove(struct avl_node **r, size_t key)
  * Simple lookup
  */
 struct avl_node *
-avl_lookup(struct avl_node *root, size_t key)
+avl_lookup(struct avl_node *root, long key)
 {
 	while (root) {
 		if (key > root->key) {
