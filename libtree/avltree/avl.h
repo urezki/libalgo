@@ -19,15 +19,25 @@
 #ifndef __AVL_H__
 #define __AVL_H__
 
-struct avl_node {
+#define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
+
+typedef struct avl_node {
 	/* left, right, parent */
 	struct avl_node *link[3];
-	size_t key;
-	int bf;
-	void *priv_data;
-};
+	long int key;
+	short int bf;
+	void *data;
+} avl_node;
 
-extern void avl_insert(struct avl_node **, struct avl_node *);
+typedef struct avl_tree {
+	struct avl_node *root;
+	size_t count;
+} avl_tree;
+
+extern int avl_insert(struct avl_node **, struct avl_node *);
 extern struct avl_node *avl_lookup(struct avl_node *, size_t);
+extern void avl_remove(struct avl_node **, size_t);
+extern void avl_free(struct avl_node *);
+extern struct avl_node *avl_alloc(int);
 
 #endif	/* __AVL_H__ */

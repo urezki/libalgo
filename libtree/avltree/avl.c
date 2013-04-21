@@ -18,14 +18,19 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
+#include <stdint.h>
 
 /* locals */
 #include <avl.h>
 #include <debug.h>
+#include <timer.h>
+
+#ifdef TEST
+static void avl_dump_to_file(avl_node *n, const char *file);
+#endif
 
 struct avl_node *
-alloc_avl_node(int sizeof_priv)
+avl_alloc(int data_size)
 {
 	struct avl_node *n = NULL;
 
@@ -34,22 +39,22 @@ alloc_avl_node(int sizeof_priv)
 		BUG();
 
 	/* allocate place for private data */
-	if (sizeof_priv > 0) {
-		n->priv_data = calloc(1, sizeof_priv);
-		if (n->priv_data == NULL)
-			;
+	if (data_size > 0) {
+		n->data = calloc(1, data_size);
+		if (n->data == NULL)
+			BUG();
 	}
 
 	return n;
 }
 
 void
-free_avl_node(struct avl_node *n)
+avl_free(struct avl_node *n)
 {
 	if (n) {
-		if (n->priv_data) {
-			free(n->priv_data);
-			n->priv_data = NULL;
+		if (n->data) {
+			free(n->data);
+			n->data = NULL;
 		}
 
 		free(n);
@@ -58,10 +63,10 @@ free_avl_node(struct avl_node *n)
 }
 
 void *
-get_avl_priv_data(struct avl_node *n)
+avl_priv_data(struct avl_node *n)
 {
 	if (n)
-		return n->priv_data;
+		return n->data;
 
 	return NULL;
 }
@@ -70,7 +75,7 @@ get_avl_priv_data(struct avl_node *n)
  * left rotation of node (r), (rc) is (r)'s right child
  */
 static inline void
-avl_left_pivot(struct avl_node **r)
+do_left_pivot(struct avl_node **r)
 {
 	struct avl_node *rc = NULL;
 
@@ -100,6 +105,7 @@ avl_left_pivot(struct avl_node **r)
 
 	rc->bf = 0;
 	(*r)->bf = 0;
+
 	*r = rc;
 }
 
@@ -107,7 +113,7 @@ avl_left_pivot(struct avl_node **r)
  * right rotation of node (r), (lc) is (r)'s left child
  */
 static inline void
-avl_right_pivot(struct avl_node **r)
+do_right_pivot(struct avl_node **r)
 {
 	struct avl_node *lc = NULL;
 
@@ -137,6 +143,7 @@ avl_right_pivot(struct avl_node **r)
 
 	lc->bf = 0;
 	(*r)->bf = 0;
+
 	*r = lc;
 }
 
@@ -144,95 +151,120 @@ avl_right_pivot(struct avl_node **r)
  * left-right rotation
  */
 static inline void
-avl_double_right_pivot(struct avl_node **r)
+do_double_right_pivot(struct avl_node **r)
 {
 	struct avl_node *lc = NULL;
-	struct avl_node *nr = NULL;
-
-	/* get left child */
-	lc = (*r)->link[0];
-
-	/* get new root */
-	nr = lc->link[1];
+	struct avl_node *np = NULL;
 
 	/*
-	 * new root (nr) is sliding between left child (lc)
+	 * get left child
+	 */
+	lc = (*r)->link[0];
+
+	/*
+	 * get new root
+	 */
+	np = lc->link[1];
+
+	/* right heavier */
+	if (np->bf > 0) {
+		(*r)->bf = 0;
+		lc->bf = -1;
+	} else if (np->bf < 0) {
+		(*r)->bf = 1;
+		lc->bf = 0;
+	} else {
+		(*r)->bf = 0;
+		lc->bf = 0;
+	}
+
+	/* balanced */
+	np->bf = 0;
+
+	/*
+	 * new root (np) is sliding between left child (lc)
 	 * and old root (r), given them its left and right
 	 * sub-trees
 	 */
-	lc->link[1] = nr->link[0];
-	nr->link[0] = lc;
+	lc->link[1] = np->link[0];
+	np->link[0] = lc;
 
-	(*r)->link[0] = nr->link[1];
-	nr->link[1] = *r;
-
-	nr->bf = 0;
-	lc->bf = 0;
+	(*r)->link[0] = np->link[1];
+	np->link[1] = *r;
 
 	/* take care about parent */
-	nr->link[2] = (*r)->link[2];
+	np->link[2] = (*r)->link[2];
 
 	if (likely((*r)->link[2] != NULL)) {
 		if ((*r)->link[2]->link[0] == *r)
-			(*r)->link[2]->link[0] = nr;
+			(*r)->link[2]->link[0] = np;
 		else
-			(*r)->link[2]->link[1] = nr;
+			(*r)->link[2]->link[1] = np;
 	}
 
-	/* ??? */
-	(*r)->bf = 1;
-
-	*r = nr;
+	*r = np;
 }
 
 /*
  * right-left rotation
  */
 static inline void
-avl_double_left_pivot(struct avl_node **r)
+do_double_left_pivot(struct avl_node **r)
 {
 	struct avl_node *rc = NULL;
-	struct avl_node *nr = NULL;
-	
-	/* get right child */
-	rc = (*r)->link[1];
-
-	/* get new root */
-	nr = rc->link[0];
+	struct avl_node *np = NULL;
 
 	/*
-	 * new root (nr) is sliding between right child (rc)
+	 * get right child
+	 */
+	rc = (*r)->link[1];
+
+	/*
+	 * get new root
+	 */
+	np = rc->link[0];
+
+	/* right heavier */
+	if (np->bf < 0) {
+		(*r)->bf = 0;
+		rc->bf = 1;
+	} else if (np->bf > 0) {
+		(*r)->bf = -1;
+		rc->bf = 0;
+	} else {
+		(*r)->bf = 0;
+		rc->bf = 0;
+	}
+
+	/*
+	 * new root (np) is sliding between right child (rc)
 	 * and old root (r), given them its left and right
 	 * sub-trees
 	 */
-	rc->link[0] = nr->link[1];
-	nr->link[1] = rc;
+	rc->link[0] = np->link[1];
+	np->link[1] = rc;
 
-	(*r)->link[1] = nr->link[0];
-	nr->link[0] = *r;
+	(*r)->link[1] = np->link[0];
+	np->link[0] = *r;
 
 	/* balanced */
-	nr->bf = 0;
-	rc->bf = 0;
+	np->bf = 0;
 
 	/* take care about parent */
-	nr->link[2] = (*r)->link[2];
+	np->link[2] = (*r)->link[2];
 
 	if (likely((*r)->link[2] != NULL)) {
 		if ((*r)->link[2]->link[0] == *r)
-			(*r)->link[2]->link[0] = nr;
+			(*r)->link[2]->link[0] = np;
 		else
-			(*r)->link[2]->link[1] = nr;
+			(*r)->link[2]->link[1] = np;
 	}
 
-	/* ??? */
-	(*r)->bf = -1;
-
-	*r = nr;
+	*r = np;
 }
 
-static void
-do_avl_rebalance(struct avl_node **r, struct avl_node *ub)
+static inline void
+do_pivot(struct avl_node **r, struct avl_node *ub)
 {
 	int change_root = 0;
 
@@ -241,15 +273,15 @@ do_avl_rebalance(struct avl_node **r, struct avl_node *ub)
 
 	if (ub->bf < 0) {
 		if (ub->link[0]->bf > 0) {
-			avl_double_right_pivot(&ub);
+			do_double_right_pivot(&ub);
 		} else {
-			avl_right_pivot(&ub);
+			do_right_pivot(&ub);
 		}
 	} else if (ub->bf > 0) {
 		if (ub->link[1]->bf < 0) {
-			avl_double_left_pivot(&ub);
+			do_double_left_pivot(&ub);
 		} else {
-			avl_left_pivot(&ub);
+			do_left_pivot(&ub);
 		}
 	} else {
 		BUG();
@@ -262,7 +294,7 @@ do_avl_rebalance(struct avl_node **r, struct avl_node *ub)
 }
 
 static struct avl_node *
-get_unbalanced_node(struct avl_node *f, struct avl_node *t)
+fix_balance(struct avl_node *f, struct avl_node *t)
 {
 	struct avl_node *p;
 
@@ -287,10 +319,57 @@ get_unbalanced_node(struct avl_node *f, struct avl_node *t)
 			 * after insertion a node is balanced
 			 */
 			break;
+		} else if (p->bf > 2 || p->bf < -2) {
+			BUG();
 		}
 	}
 
 	return NULL;
+}
+
+static struct avl_node *
+do_simple_insert(struct avl_node *r, struct avl_node *n)
+{
+	while (1) {
+		if (n->key > r->key) {
+			if (r->link[1]) {
+				/* keep trace back */
+				r->link[1]->link[2] = r;
+
+				/* next right node */
+				r = r->link[1];
+			} else {
+				/* keep trace back */
+				n->link[2] = r;
+
+				/* insert and leave */
+				r->link[1] = n;
+				break;
+			}
+		} else if (n->key < r->key) {
+			if (r->link[0]) {
+				/* keep trace back */
+				r->link[0]->link[2] = r;
+
+				/* next left node */
+				r = r->link[0];
+			} else {
+				/* keep trace back */
+				n->link[2] = r;
+
+				/* insert and leave */
+				r->link[0] = n;
+				break;
+			}
+		} else {
+			/*
+			 * keys are the same
+			 */
+			return NULL;
+		}
+	}
+
+	return r;
 }
 
 /*
@@ -300,95 +379,91 @@ get_unbalanced_node(struct avl_node *f, struct avl_node *t)
  * - check if a tree has to be balanced;
  * - balance the tree, if needed;
  */
-void
+int
 avl_insert(struct avl_node **r, struct avl_node *n)
 {
-	struct avl_node *rp = NULL;
+	struct avl_node *np = NULL;
 	struct avl_node *ub = NULL;
+	int rv = 0;
 
-	if (*r == NULL) {
+	if (unlikely(!*r)) {
 		*r = n;
-		return;
+		rv = 1;
+		goto leave;
 	}
 
 	/*
-	 * start searching an appropriate place from root
-	 * node going down till the bottom of the tree
+	 * NP is a parent of new node N
 	 */
-	rp = *r;
-
-	while (1) {
-		if (n->key > rp->key) {
-			if (rp->link[1]) {
-				/* keep trace back */
-				rp->link[1]->link[2] = rp;
-
-				/* next right node */
-				rp = rp->link[1];
-			} else {
-				/* keep trace back */
-				n->link[2] = rp;
-
-				/* insert and leave */
-				rp->link[1] = n;
-				break;
-			}
-		} else if (n->key < rp->key) {
-			if (rp->link[0]) {
-				/* keep trace back */
-				rp->link[0]->link[2] = rp;
-
-				/* next left node */
-				rp = rp->link[0];
-			} else {
-				/* keep trace back */
-				n->link[2] = rp;
-
-				/* insert and leave */
-				rp->link[0] = n;
-				break;
-			}
+	np = do_simple_insert(*r, n);
+	if (np) {
+		/*
+		 * perform rotations
+		 */
+		if (!np->link[0] || !np->link[1]) {
+			ub = fix_balance(n, *r);
+			if (ub)
+				/* r - can be reassigned */
+				do_pivot(r, ub);
 		} else {
 			/*
-			 * keys are the same
+			 * has two leafs
 			 */
-			return;
+			np->bf = 0;
 		}
+
+		/* success */
+		rv = 1;
 	}
 
-	if (!rp->link[0] || !rp->link[1]) {
-		ub = get_unbalanced_node(n, *r);
-		if (ub) {
-			/* r - can be reassigned */
-			do_avl_rebalance(r, ub);
-		}
-	} else {
-		/*
-		 * parent of the inserted node is balanced
-		 */
-		rp->bf = 0;
-	}
+leave:
+	return rv;
 }
 
 void
-avl_remove()
+avl_remove(struct avl_node **r, size_t key)
 {
-	
-	
-	
+	struct avl_node *t = NULL;
+
+	t = avl_lookup(*r, key);
+	if (t) {
+		/* is not head */
+		if (t != *r) {
+			struct avl_node *l = t->link[0];
+			struct avl_node *r = t->link[1];
+			struct avl_node *p = t->link[2];
+
+			if (l && r) {
+				/* two children */
+
+			} else if (!l || !r) {
+				/* one children */
+
+			} else {
+				/* no children */
+
+			}
+		} else {
+			/*
+			 * remove the head of the tree
+			 */
+		}
+	}
 }
 
+/*
+ * Simple lookup
+ */
 struct avl_node *
 avl_lookup(struct avl_node *root, size_t key)
 {
 	while (root) {
-		if (key == root->key)
-			return root;
-
 		if (key > root->key) {
 			root = root->link[1];
-		} else {
+		} else if (key < root->key) {
 			root = root->link[0];
+		} else {
+			return root;
 		}
 	}
 
@@ -396,19 +471,143 @@ avl_lookup(struct avl_node *root, size_t key)
 }
 
 #ifdef TEST
-int main(int argc, char **argv)
+
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+
+static void
+avl_dump(avl_node *n, FILE *fp)
+{
+	if (n) {
+		if (n->link[0])
+			fprintf(fp, "\t%ld -> %ld\n", n->key, n->link[0]->key);
+
+		if (n->link[1])
+			fprintf(fp, "\t%ld -> %ld\n", n->key, n->link[1]->key);
+
+		avl_dump(n->link[0], fp);
+		avl_dump(n->link[1], fp);
+	}
+}
+
+static void
+avl_dump_to_file(avl_node *n, const char *file)
+{
+	FILE *fp, rv;
+
+	fp = fopen(file, "w");
+	if (fp) {
+		fprintf(fp, "digraph G\n{\n");
+		fprintf(fp, "node [shape=\"circle\"];\n");
+		avl_dump(n, fp);
+		fprintf(fp, "}\n");
+
+		fclose(fp);
+	}
+}
+
+static void
+test_1()
+{
+	avl_node *root = NULL;
+	int i, rv;
+
+	/* int input[] = { 100, 20, 150, 6, 26, 27 }; */
+	int input[] = { 100, 20, 150, 6, 26, 25 };
+
+	/* int input[] = { 3769, 4163, 3465, 4143, 4396, 4011 }; */
+	/* int input[] = { 3769, 4163, 3465, 4143, 4396, 4144 }; */
+
+	for (i = 0; i < ARRAY_SIZE(input); i++) {
+		struct avl_node *n;
+
+		n = avl_alloc(0);
+		n->key = input[i];
+		rv = avl_insert(&root, n);
+		if (rv == 0)
+			fprintf(stdout, "'avl_insert()' error, %ld\n", n->key);
+	}
+
+	for (i = 0; i < ARRAY_SIZE(input); i++) {
+		struct avl_node *n;
+
+		n = avl_lookup(root, input[i]);
+		if (n) {
+			struct avl_node *l = n->link[0];
+			struct avl_node *r = n->link[1];
+
+			fprintf(stdout, "-> %ld { %ld, %ld } %d\n",
+					n->key, l ? l->key:-99, r ? r->key:-99, n->bf);
+		}
+	}
+
+	avl_dump_to_file(root, __func__);
+
+}
+
+static void
+test_2()
 {
 	struct avl_node *root = NULL;
+	struct timespec a;
+	struct timespec b;
+	uint64_t d = 0;
 	int i = 0;
+	int rv;
+	int error = 0;
 
 	srand(time(0));
 
-	for (i = 0; i < 1000000; i++) {
-		struct avl_node *tmp = alloc_avl_node(0);
+	/* insert */
+	for (i = 0; i < 100; i++) {
+		struct avl_node *tmp = avl_alloc(0);
 
-		tmp->key = rand() % 1000000;
-		avl_insert(&root, tmp);
+		tmp->key = rand() % 1000000000;
+		time_now(&a);
+		rv = avl_insert(&root, tmp);
+		time_now(&b);
+
+		if (!rv)
+			error++;
+
+		d += time_diff(&a, &b);
 	}
+
+	/* average */
+	d = d / i;
+	fprintf(stdout, "insertion: %lu nano/s, %f micro/s, errors: %d\n",
+			d, (float) d / 1000, error);
+
+	/* lookup */
+	for (i = 0, d = 0, error = 0; i < 100; i++) {
+		struct avl_node *tmp;
+		size_t key;
+
+		key = rand() % 1000000000;
+
+		time_now(&a);
+		tmp = avl_lookup(root, key);
+		time_now(&b);
+
+		if (!tmp)
+			error++;
+
+		d += time_diff(&a, &b);
+	}
+
+	/* average */
+	d = d / i;
+	fprintf(stdout, "lookup: %lu nano/s, %f micro/s, errors: %d\n",
+			d, (float) d / 1000, error);
+
+	avl_dump_to_file(root, __func__);
+}
+
+int main(int argc, char **argv)
+{
+	test_1();
+	test_2();
 
 	return 0;
 }
