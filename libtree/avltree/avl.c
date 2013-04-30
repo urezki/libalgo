@@ -1,6 +1,8 @@
 /*
  * avl.c - source file of the AVL tree implementation
- * Copyright (C) 2010 Uladzislau Rezki (urezki@gmail.com)
+ * Copyright (C) 2010-2011 Uladzislau Rezki (urezki@gmail.com)
+ * Copyright (C) 2011-2012 Uladzislau Rezki (urezki@gmail.com)
+ * Copyright (C) 2012-2013 Uladzislau Rezki (urezki@gmail.com)
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -383,8 +385,7 @@ do_simple_insert(struct avl_node *r, struct avl_node *n)
 int
 avl_insert(struct avl_node **r, struct avl_node *n)
 {
-	struct avl_node *np = NULL;
-	struct avl_node *ub = NULL;
+	struct avl_node *p;
 	int rv = 0;
 
 	if (unlikely(!*r)) {
@@ -394,24 +395,20 @@ avl_insert(struct avl_node **r, struct avl_node *n)
 	}
 
 	/*
-	 * NP is a parent of new node N
+	 * p is a parent of new node n
 	 */
-	np = do_simple_insert(*r, n);
-	if (np) {
+	p = do_simple_insert(*r, n);
+	if (p) {
 		/*
-		 * perform rotations
+		 * p is first unbalanced node in the
+		 * entire path after insertion
 		 */
-		if (!np->link[0] || !np->link[1]) {
-			ub = fix_balance(n, *r);
-			if (ub)
-				/* r - can be reassigned */
-				do_pivot(r, ub);
-		} else {
+		p = fix_balance(n, *r);
+		if (p)
 			/*
-			 * has two leafs
+			 * r can be reassigned
 			 */
-			np->bf = 0;
-		}
+			do_pivot(r, p);
 
 		/* success */
 		rv = 1;

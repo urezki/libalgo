@@ -33,5 +33,7 @@ $(AVL_STATIC_LIB): $(AVL_OBJ)
 	$(CC) $(CFLAGS) $(INCLUDE) -o $@ -c $<
 
 clean:
-	rm -rf $(AVL_OBJ) $(BST_OBJ) $(BST_SHARED_LIB) \
-		$(BST_STATIC_LIB) $(AVL_SHARED_LIB) $(AVL_STATIC_LIB)
+	@find . -name "*.so" | xargs rm -rf
+	@find . -name "*.a" | xargs rm -rf
+	@find . -name "*.o" | xargs rm -rf
+	@echo Done!
