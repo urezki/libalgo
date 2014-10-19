@@ -1,4 +1,6 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -135,6 +137,9 @@ test_2()
 
 	avl_dump_to_file(root, __func__);
 }
+
+/* gcc avltest.c -I ../../include/ -I../avltree/ ../libavl_fpic.a -lrt */
+/* dot test_1 -Tpng -o image.png */
 
 int main(int argc, char **argv)
 {
