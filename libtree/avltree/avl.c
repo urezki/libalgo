@@ -1,6 +1,6 @@
 /*
  * avl.c - source file of the AVL tree implementation
- * Copyright (C) 2010-2013 Uladzislau Rezki (urezki@gmail.com)
+ * Copyright (C) 2010-2016 Uladzislau Rezki (urezki@gmail.com)
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -25,7 +25,7 @@
 #include <debug.h>
 
 struct avl_node *
-avl_alloc(int data_size)
+avl_alloc(void)
 {
 	struct avl_node *n = NULL;
 
@@ -33,35 +33,21 @@ avl_alloc(int data_size)
 	if (unlikely(n == NULL))
 		BUG();
 
-	/* allocate place for private data */
-	if (data_size > 0) {
-		n->data = calloc(1, data_size);
-		if (n->data == NULL)
-			BUG();
-	}
-
 	return n;
 }
 
 void
 avl_free(struct avl_node *n)
 {
-	if (n) {
-		if (n->data) {
-			free(n->data);
-			n->data = NULL;
-		}
-
+	if (n)
 		free(n);
-		n = NULL;
-	}
 }
 
 void *
 avl_priv_data(struct avl_node *n)
 {
-	if (n)
-		return n->data;
+	/* if (n) */
+	/* 	return n->data; */
 
 	return NULL;
 }
@@ -69,8 +55,8 @@ avl_priv_data(struct avl_node *n)
 /*
  * left rotation of node (r), (rc) is (r)'s right child
  */
-static inline void
-do_left_pivot(struct avl_node **r)
+static __always_inline avl_node *
+do_left_pivot(struct avl_node *r)
 {
 	struct avl_node *rc = NULL;
 
@@ -81,34 +67,52 @@ do_left_pivot(struct avl_node **r)
 	 */
 
 	/* get new root */
-	rc = (*r)->link[1];
+	rc = r->link[1];
 
 	/*
 	 * point parent to new left/right child
 	 */
-	rc->link[2] = (*r)->link[2];
+	rc->link[2] = r->link[2];
 
-	if (likely((*r)->link[2] != NULL)) {
-		if ((*r)->link[2]->link[0] == *r)
-			(*r)->link[2]->link[0] = rc;
+	if (likely(r->link[2] != NULL)) {
+		if (r->link[2]->link[0] == r)
+			r->link[2]->link[0] = rc;
 		else
-			(*r)->link[2]->link[1] = rc;
+			r->link[2]->link[1] = rc;
 	}
 
-	(*r)->link[1] = rc->link[0];
-	rc->link[0] = *r;
+	r->link[1] = rc->link[0];
+
+	/*
+	 * change parent of rc's left child
+	 */
+	if (rc->link[0])
+		rc->link[0]->link[2] = r;
+
+	/*
+	 * set new parent of rotated node
+	 */
+	r->link[2] = rc;
+
+	/*
+	 * attach left node
+	 */
+	rc->link[0] = r;
 
 	rc->bf = 0;
-	(*r)->bf = 0;
+	r->bf = 0;
 
-	*r = rc;
+	/*
+	 * new root
+	 */
+	return rc;
 }
 
 /*
  * right rotation of node (r), (lc) is (r)'s left child
  */
-static inline void
-do_right_pivot(struct avl_node **r)
+static __always_inline avl_node *
+do_right_pivot(struct avl_node *r)
 {
 	struct avl_node *lc = NULL;
 
@@ -119,34 +123,55 @@ do_right_pivot(struct avl_node **r)
 	 */
 
 	/* get new root */
-	lc = (*r)->link[0];
+	lc = r->link[0];
 
 	/*
 	 * point parent to new left/right child
 	 */
-	lc->link[2] = (*r)->link[2];
+	lc->link[2] = r->link[2];
 
-	if (likely((*r)->link[2] != NULL)) {
-		if ((*r)->link[2]->link[0] == *r)
-			(*r)->link[2]->link[0] = lc;
+	/*
+	 * assign a new "up" node if there is
+	 */
+	if (likely(r->link[2] != NULL)) {
+		if (r->link[2]->link[0] == r)
+			r->link[2]->link[0] = lc;
 		else
-			(*r)->link[2]->link[1] = lc;
+			r->link[2]->link[1] = lc;
 	}
 
-	(*r)->link[0] = lc->link[1];
-	lc->link[1] = *r;
+	r->link[0] = lc->link[1];
+
+	/*
+	 * change parent of lc's right child
+	 */
+	if (lc->link[1])
+		lc->link[1]->link[2] = r;
+
+	/*
+	 * set new parent of rotated node
+	 */
+	r->link[2] = lc;
+
+	/*
+	 * attach right node
+	 */
+	lc->link[1] = r;
 
 	lc->bf = 0;
-	(*r)->bf = 0;
+	r->bf = 0;
 
-	*r = lc;
+	/*
+	 * new root
+	 */
+	return lc;
 }
 
 /*
  * left-right rotation
  */
-static inline void
-do_double_right_pivot(struct avl_node **r)
+static __always_inline avl_node *
+do_double_right_pivot(struct avl_node *r)
 {
 	struct avl_node *lc = NULL;
 	struct avl_node *np = NULL;
@@ -154,7 +179,7 @@ do_double_right_pivot(struct avl_node **r)
 	/*
 	 * get left child
 	 */
-	lc = (*r)->link[0];
+	lc = r->link[0];
 
 	/*
 	 * get new root
@@ -163,13 +188,13 @@ do_double_right_pivot(struct avl_node **r)
 
 	/* right heavier */
 	if (np->bf > 0) {
-		(*r)->bf = 0;
+		r->bf = 0;
 		lc->bf = -1;
 	} else if (np->bf < 0) {
-		(*r)->bf = 1;
+		r->bf = 1;
 		lc->bf = 0;
 	} else {
-		(*r)->bf = 0;
+		r->bf = 0;
 		lc->bf = 0;
 	}
 
@@ -184,27 +209,36 @@ do_double_right_pivot(struct avl_node **r)
 	lc->link[1] = np->link[0];
 	np->link[0] = lc;
 
-	(*r)->link[0] = np->link[1];
-	np->link[1] = *r;
+	r->link[0] = np->link[1];
+	np->link[1] = r;
 
 	/* take care about parent */
-	np->link[2] = (*r)->link[2];
+	np->link[2] = r->link[2];
 
-	if (likely((*r)->link[2] != NULL)) {
-		if ((*r)->link[2]->link[0] == *r)
-			(*r)->link[2]->link[0] = np;
+	if (likely(r->link[2] != NULL)) {
+		if (r->link[2]->link[0] == r)
+			r->link[2]->link[0] = np;
 		else
-			(*r)->link[2]->link[1] = np;
+			r->link[2]->link[1] = np;
 	}
 
-	*r = np;
+	/*
+	 * update parent link of np's left/right leafs
+	 */
+	r->link[2] = np;
+	lc->link[2] = np;
+
+	/*
+	 * new root
+	 */
+	return np;
 }
 
 /*
  * right-left rotation
  */
-static inline void
-do_double_left_pivot(struct avl_node **r)
+static __always_inline avl_node *
+do_double_left_pivot(struct avl_node *r)
 {
 	struct avl_node *rc = NULL;
 	struct avl_node *np = NULL;
@@ -212,7 +246,7 @@ do_double_left_pivot(struct avl_node **r)
 	/*
 	 * get right child
 	 */
-	rc = (*r)->link[1];
+	rc = r->link[1];
 
 	/*
 	 * get new root
@@ -221,13 +255,13 @@ do_double_left_pivot(struct avl_node **r)
 
 	/* right heavier */
 	if (np->bf < 0) {
-		(*r)->bf = 0;
+		r->bf = 0;
 		rc->bf = 1;
 	} else if (np->bf > 0) {
-		(*r)->bf = -1;
+		r->bf = -1;
 		rc->bf = 0;
 	} else {
-		(*r)->bf = 0;
+		r->bf = 0;
 		rc->bf = 0;
 	}
 
@@ -239,57 +273,61 @@ do_double_left_pivot(struct avl_node **r)
 	rc->link[0] = np->link[1];
 	np->link[1] = rc;
 
-	(*r)->link[1] = np->link[0];
-	np->link[0] = *r;
+	r->link[1] = np->link[0];
+	np->link[0] = r;
 
 	/* balanced */
 	np->bf = 0;
 
 	/* take care about parent */
-	np->link[2] = (*r)->link[2];
+	np->link[2] = r->link[2];
 
-	if (likely((*r)->link[2] != NULL)) {
-		if ((*r)->link[2]->link[0] == *r)
-			(*r)->link[2]->link[0] = np;
+	if (likely(r->link[2] != NULL)) {
+		if (r->link[2]->link[0] == r)
+			r->link[2]->link[0] = np;
 		else
-			(*r)->link[2]->link[1] = np;
+			r->link[2]->link[1] = np;
 	}
 
-	*r = np;
+	/*
+	 * update parent link of np's left/right leafs
+	 */
+	r->link[2] = np;
+	rc->link[2] = np;
+
+	/*
+	 * new root
+	 */
+	return np;
 }
 
-static inline void
-do_pivot(struct avl_node **r, struct avl_node *ub)
+static __always_inline struct avl_node *
+do_pivot(struct avl_node *r, struct avl_node *ub)
 {
-	int change_root = 0;
-
-	if (*r == ub)
-		change_root = 1;
-
 	if (ub->bf < 0) {
 		if (ub->link[0]->bf > 0) {
-			do_double_right_pivot(&ub);
+			ub = do_double_right_pivot(ub);
 		} else {
-			do_right_pivot(&ub);
+			ub = do_right_pivot(ub);
 		}
 	} else if (ub->bf > 0) {
 		if (ub->link[1]->bf < 0) {
-			do_double_left_pivot(&ub);
+			ub = do_double_left_pivot(ub);
 		} else {
-			do_left_pivot(&ub);
+			ub = do_left_pivot(ub);
 		}
 	} else {
 		BUG();
 	}
 
-	if (unlikely(change_root)) {
-		ub->link[2] = NULL;
-		*r = ub;		/* new root */
-	}
+	/*
+	 * check if "ub" is a new root after rotation
+	 */
+	return (ub->link[2] != NULL) ? r : ub;
 }
 
-static struct avl_node *
-fix_balance(struct avl_node *f, struct avl_node *t)
+static __always_inline struct avl_node *
+do_fix_balance(struct avl_node *f, struct avl_node *t)
 {
 	struct avl_node *p;
 
@@ -300,10 +338,10 @@ fix_balance(struct avl_node *f, struct avl_node *t)
 		p = f->link[2];
 
 		if (p->link[1] == f)
-			/* right subtree */
+			/* right */
 			p->bf++;
 		else
-			/* left subtree */
+			/* left */
 			p->bf--;
 
 		/* return unbalanced node */
@@ -311,7 +349,7 @@ fix_balance(struct avl_node *f, struct avl_node *t)
 			return p;
 		} else if (p->bf == 0) {
 			/*
-			 * after insertion a node is balanced
+			 * after insertion/removing a node is balanced
 			 */
 			break;
 		} else if (p->bf > 2 || p->bf < -2) {
@@ -323,6 +361,37 @@ fix_balance(struct avl_node *f, struct avl_node *t)
 }
 
 static struct avl_node *
+do_fix_balance_remove(struct avl_node *f, struct avl_node *t)
+{
+	struct avl_node *p, *u = NULL;
+
+	/*
+	 * f - from; t - to, u - unbalanced
+	 */
+	for (; f != t; f = f->link[2]) {
+		p = f->link[2];
+
+		if (p->link[1] == f)
+			/* removing from right sub-tree */
+			f->bf--;
+		else
+			/* removing from left sub-tree */
+			f->bf++;
+
+		/* save a node to balance */
+		if (f->bf == 2 || f->bf == -2)
+			u = f;
+
+		BUG_ON(f->bf > 2 || f->bf < -2);
+
+		/* if (f == t) */
+		/* 	break; */
+	}
+
+	return u;
+}
+
+static __always_inline struct avl_node *
 do_simple_insert(struct avl_node *r, struct avl_node *n)
 {
 	while (1) {
@@ -395,12 +464,9 @@ avl_insert(struct avl_node **r, struct avl_node *n)
 		 * p is first unbalanced node in the
 		 * entire path after insertion
 		 */
-		p = fix_balance(n, *r);
+		p = do_fix_balance(n, *r);
 		if (p)
-			/*
-			 * r can be reassigned
-			 */
-			do_pivot(r, p);
+			*r = do_pivot(*r, p);
 
 		/* success */
 		rv = 1;
@@ -410,38 +476,6 @@ leave:
 	return rv;
 }
 
-void
-avl_remove(struct avl_node **r, long key)
-{
-	struct avl_node *t = NULL;
-
-	t = avl_lookup(*r, key);
-	if (t) {
-#if 0
-		/* is not head */
-		if (t != *r) {
-			struct avl_node *l = t->link[0];
-			struct avl_node *r = t->link[1];
-			struct avl_node *p = t->link[2];
-
-			if (l && r) {
-				/* two children */
-
-			} else if (!l || !r) {
-				/* one children */
-
-			} else {
-				/* no children */
-
-			}
-		} else {
-			/*
-			 * remove the head of the tree
-			 */
-		}
-#endif
-	}
-}
 
 /*
  * Simple lookup

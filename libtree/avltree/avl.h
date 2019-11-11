@@ -26,7 +26,6 @@ typedef struct avl_node {
 	struct avl_node *link[3];
 	long int key;
 	short int bf;
-	void *data;
 } avl_node;
 
 typedef struct avl_tree {
@@ -38,6 +37,6 @@ extern int avl_insert(struct avl_node **, struct avl_node *);
 extern struct avl_node *avl_lookup(struct avl_node *, long);
 extern void avl_remove(struct avl_node **, long);
 extern void avl_free(struct avl_node *);
-extern struct avl_node *avl_alloc(int);
+extern struct avl_node *avl_alloc(void);
 
 #endif	/* __AVL_H__ */

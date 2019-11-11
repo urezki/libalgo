@@ -57,7 +57,7 @@ test_1()
 	for (i = 0; i < ARRAY_SIZE(input); i++) {
 		struct avl_node *n;
 
-		n = avl_alloc(0);
+		n = avl_alloc();
 		n->key = input[i];
 		rv = avl_insert(&root, n);
 		if (rv == 0)
@@ -80,6 +80,24 @@ test_1()
 	avl_dump_to_file(root, __func__);
 }
 
+void sort_array(unsigned long *array, unsigned long n)
+{
+	unsigned long c, d, swap;
+
+	for (c = 0 ; c < n - 1; c++) {
+		for (d = 0 ; d < n - c - 1; d++) {
+			if (array[d] > array[d+1]) {
+				swap       = array[d];
+				array[d]   = array[d+1];
+				array[d+1] = swap;
+			}
+		}
+	}
+}
+
+#include <pthread.h>
+pthread_mutex_t lock;
+
 static void
 test_2()
 {
@@ -90,52 +108,59 @@ test_2()
 	int i = 0;
 	int rv;
 	int error = 0;
+	unsigned long max_nsec = 0;
+	unsigned int tree_size = 1000000;
+	struct avl_node *array;
 
-	srand(time(0));
+	(void) pthread_mutex_init(&lock, NULL);
 
-	/* insert */
-	for (i = 0; i < 100; i++) {
-		struct avl_node *tmp = avl_alloc(0);
+	srand(time(NULL));
 
-		tmp->key = rand() % 1000000000;
+	array = calloc(tree_size, sizeof(struct avl_node));
+
+	for (i = 0; i < tree_size; i++)
+		array[i].key = rand() % 10000000000;
+		/* array[i].key = i; */
+		/* array[i].key = tree_size - i; */
+
+	for (i = 0, max_nsec = 0; i < tree_size; i++) {
+		pthread_mutex_lock(&lock);
 		time_now(&a);
-		rv = avl_insert(&root, tmp);
+		rv = avl_insert(&root, &array[i]);
 		time_now(&b);
-
-		if (!rv)
-			error++;
+		pthread_mutex_unlock(&lock);
 
 		d += time_diff(&a, &b);
+		if (d > max_nsec)
+			max_nsec = d;
 	}
 
 	/* average */
 	d = d / i;
-	fprintf(stdout, "insertion: %lu nano/s, %f micro/s, errors: %d\n",
-			d, (float) d / 1000, error);
+	fprintf(stdout, "insertion: %lu nano/s, %f micro/s, max: %lu nsec\n",
+			d, (float) d / 1000, max_nsec);
 
 	/* lookup */
-	for (i = 0, d = 0, error = 0; i < 100; i++) {
+	for (i = 0, d = 0, max_nsec = 0; i < tree_size; i++) {
 		struct avl_node *tmp;
 		size_t key;
 
-		key = rand() % 1000000000;
-
 		time_now(&a);
-		tmp = avl_lookup(root, key);
+		tmp = avl_lookup(root, array[i].key);
 		time_now(&b);
 
-		if (!tmp)
-			error++;
-
 		d += time_diff(&a, &b);
+
+		if (d > max_nsec)
+			max_nsec = d;
 	}
 
 	/* average */
 	d = d / i;
-	fprintf(stdout, "lookup: %lu nano/s, %f micro/s, errors: %d\n",
-			d, (float) d / 1000, error);
+	fprintf(stdout, "lookup: %lu nano/s, %f micro/s, max: %lu nsec\n",
+			d, (float) d / 1000, max_nsec);
 
-	avl_dump_to_file(root, __func__);
+	/* avl_dump_to_file(root, __func__); */
 }
 
 /* gcc avltest.c -I ../../include/ -I../avltree/ ../libavl_fpic.a -lrt */
@@ -143,7 +168,7 @@ test_2()
 
 int main(int argc, char **argv)
 {
-	test_1();
+	/* test_1(); */
 	test_2();
 
 	return 0;
