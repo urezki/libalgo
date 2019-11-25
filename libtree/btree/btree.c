@@ -7,8 +7,12 @@
 #include <btree.h>
 
 #define ULONG_MAX	(~0UL)
-#define ARRAY_MOVE(a, i, j, n)	\
-	memmove((a) + (i), (a) + (j), sizeof(*a) * (n))
+
+#define ARRAY_MOVE(a, i, j, n)		\
+	memmove((a) + (i), (a) + (j), sizeof(*a) * ((n) - (j)))
+
+#define ARRAY_INSERT(a, i, j, n)	\
+	do { ARRAY_MOVE(a, (i) + 1, i, j); (a)[i] = (n); } while(0)
 
 static bt_node *root;
 
@@ -26,8 +30,8 @@ static __always_inline bt_node *bt_zalloc_node(void)
 
 static __always_inline bt_node *bt_max_node(bt_node *n)
 {
-	while (n->links[n->num_util_slots])
-		n = n->links[root->num_util_slots];
+	while (n->links[n->nr_entries])
+		n = n->links[n->nr_entries];
 
 	return n;
 }
@@ -57,7 +61,7 @@ bt_next_sibling_of(bt_node *n, int index)
 static __always_inline int
 is_bt_node_full(bt_node *n)
 {
-	return (n->num_util_slots == MAX_UTIL_SLOTS);
+	return (n->nr_entries == MAX_UTIL_SLOTS);
 }
 
 static __always_inline int
@@ -69,21 +73,47 @@ is_bt_node_leaf(bt_node *n)
 static __always_inline int
 bt_search_node_index(bt_node *n, unsigned long val)
 {
-	int i;
+	int i, unwind_loop_count;
 
 	/*
-	 * Regular linear search is used within a node.
-	 * It is OK and acceptable if the node size is
-	 * ~3 cache lines. If it is more, then another
-	 * method should be used. For example binary
-	 * search.
+	 * Use loop unrolling to eliminate cache misses.
+	 *
+	 * ~21% faster comparing to the regular loop on insert
+	 * operation. GCC version 8.3.0, Clang version 7.0.1-8,
+	 * x86_64.
+	 *
+	 * L1-dcache-misses:
+	 *
+	 *       │     for (i = 0; i < n->nr_entries; i++) {
+	 *  6.70 │       addl   $0x1,-0x2c(%rbp)
+	 *  3.04 │ 8f:   mov    -0x20(%rbp),%rax
+	 *  0.72 │       mov    0xf0(%rax),%edx
+	 * 24.49 │       mov    -0x2c(%rbp),%eax
+	 *  1.86 │       cmp    %eax,%edx
+	 *       │     ↑ ja     71
+	 *
+	 *       │     for (i = 0; i <= unwind_loop_count; i += 2) {
+	 *  6.43 │ c5:   addl   $0x2,-0x30(%rbp)
+	 *  1.36 │ c9:   mov    -0x2c(%rbp),%eax
+	 *  4.19 │       cmp    -0x30(%rbp),%eax
+	 *       │     ↑ jge    81
 	 */
-	for (i = 0; i < n->num_util_slots; i++) {
+	unwind_loop_count = n->nr_entries - 2;
+
+	for (i = 0; i <= unwind_loop_count; i += 2) {
 		if (val <= n->slots[i].va_start)
 			return i;
+
+		if (val <= n->slots[i + 1].va_start)
+			return i + 1;
 	}
 
-	return n->num_util_slots;
+	if (unwind_loop_count & 1) {
+		if (val > n->slots[i].va_start)
+			return i + 1;
+	}
+
+	return i;
 }
 
 static __always_inline void
@@ -91,18 +121,12 @@ bt_insert_to_node(bt_node *n, int index, unsigned long val)
 {
 	BUG_ON(index >= MAX_UTIL_SLOTS);
 
-	if (index < n->num_util_slots)
+	if (index < n->nr_entries)
 		ARRAY_MOVE(n->slots, index + 1, index,
-			n->num_util_slots - index);
+			n->nr_entries);
 
 	n->slots[index].va_start = val;
-	n->num_util_slots++;
-}
-
-static inline void
-bt_node_remove(bt_node *n, int index)
-{
-	/* TODO */
+	n->nr_entries++;
 }
 
 /* Splits the child node into two peaces */
@@ -136,36 +160,34 @@ bt_split_child_node(bt_node *child, bt_node *parent, int pindex)
 	 * Cut the size of the left child and set
 	 * the size of the newly created right one.
 	 */
-	child->num_util_slots = MIN_DEGREE - 1;
-	n->num_util_slots = MIN_DEGREE - 1;
+	child->nr_entries = MIN_DEGREE - 1;
+	n->nr_entries = MIN_DEGREE - 1;
 
-	if (pindex < parent->num_util_slots) {
+	if (pindex < parent->nr_entries) {
 		/* parent must have at least one spot */
 		BUG_ON(pindex + 1 >= MAX_UTIL_SLOTS);
 
 		/* new key goes in pindex */
 		ARRAY_MOVE(parent->slots, pindex + 1, pindex,
-			parent->num_util_slots - pindex);
+			parent->nr_entries);
 
 		/* new kid(n) goes in pindex + 1 */
 		ARRAY_MOVE(parent->links, pindex + 2, pindex + 1,
-			parent->num_util_slots - pindex);
+			parent->nr_entries + 1);
 	}
 
-	/* Post the new separator key to the parent node. */
-	parent->slots[pindex].va_start =
-		child->slots[MIN_DEGREE - 1].va_start;
+	/* Post the new separator key/slot to the parent node. */
+	parent->slots[pindex] = child->slots[MIN_DEGREE - 1];
 
-	/* assign left child */
+	/*
+	 * Set left/right kids and increase
+	 * number of the parent node slots.
+	 */
 	parent->links[pindex] = child;
-
-	/* assign right child */
 	parent->links[pindex + 1] = n;
+	parent->nr_entries++;
 
-	/* increase number of slots */
-	parent->num_util_slots++;
-
-	/* assign the parent for both kids */
+	/* Set the parent for both kids */
 	n->parent = child->parent = parent;
 }
 
@@ -179,19 +201,28 @@ bt_split_root_node(bt_node *root)
 	return new_root;
 }
 
+/*
+ * Implements an insert with single pass-down, it is
+ * possible if the b-tree is based on minimum degree
+ * methodology when the maximum of keys in a node is
+ * odd, i.e. 2t - 1. Uses preemptive splitting.
+ */
 static int bt_insert(unsigned long val)
 {
 	bt_node *n;
 	int index;
 
-	if (is_bt_node_full(root))
+	if (is_bt_node_full(root)) {
 		root = bt_split_root_node(root);
+		if (unlikely(!root))
+			return -1;
+	}
 
 	n = root;
 
 	while (1) {
 		index = bt_search_node_index(n, val);
-		if (index < n->num_util_slots &&
+		if (index < n->nr_entries &&
 				n->slots[index].va_start == val)
 			break;
 
@@ -210,8 +241,9 @@ static int bt_insert(unsigned long val)
 			bt_split_child_node(n->links[index], n, index);
 
 			/*
-			 * Compare the separator key with one that is inserted,
-			 * i.e. we do not support and maintain duplicated keys.
+			 * Compare the separator key with one that is
+			 * inserted, i.e. two identical keys are not
+			 * allowed.
 			 */
 			if (unlikely(n->slots[index].va_start == val))
 				break;
@@ -233,7 +265,7 @@ bt_search(bt_node *n, unsigned long val, int *pos)
 
 	while (1) {
 		index = bt_search_node_index(n, val);
-		if (index < n->num_util_slots &&
+		if (index < n->nr_entries &&
 				n->slots[index].va_start == val) {
 			*pos = index;
 			return n;
@@ -255,7 +287,7 @@ void bt_node_destroy(bt_node *n)
 }
 
 static __always_inline void
-bt_node_delete_key(bt_node *n, int index)
+bt_node_delete_key(bt_node *n, int idx)
 {
 	/*
 	 * Example:
@@ -266,74 +298,138 @@ bt_node_delete_key(bt_node *n, int index)
 	 * in array to index number zero, after that
 	 * decrease number of elements in it.
 	 */
-	if (index < n->num_util_slots - 1)
-		ARRAY_MOVE(n->slots, index, index + 1,
-			n->num_util_slots - 1 - index);
+	if (idx < n->nr_entries - 1)
+		ARRAY_MOVE(n->slots, idx, idx + 1,
+			n->nr_entries);
 
-	n->num_util_slots--;
+	n->nr_entries--;
 }
 
-static void bt_adjust(bt_node *n)
+static void bt_move_to_left(bt_node *parent, int idx)
 {
-	bt_node *p;
+	bt_node *l = parent->links[idx];
+	bt_node *r = parent->links[idx + 1];
 
-	while (1) {
-		p = n->parent;
+	l->slots[l->nr_entries] = parent->slots[idx];
+	parent->slots[idx] = r->slots[0];
+	ARRAY_MOVE(r->slots, 0, 1, r->nr_entries);
 
-		/* if root node */
-		if (p == NULL) {
-			if (!n->num_util_slots) {
-				bt_node_destroy(n);
-				root = NULL;
-			}
-
-			return;
-		}
+	if (!is_bt_node_leaf(r)) {
+		l->links[l->nr_entries + 1] = r->links[0];
+		ARRAY_MOVE(r->links, 0, 1, r->nr_entries + 1);
 	}
+
+	r->nr_entries--;
+	l->nr_entries++;
+}
+
+static void bt_move_to_right(bt_node *parent, int idx)
+{
+	bt_node *l = parent->links[idx];
+	bt_node *r = parent->links[idx + 1];
+
+	ARRAY_INSERT(r->slots, 0, r->nr_entries,
+		parent->slots[idx]);
+
+	parent->slots[idx] = l->slots[l->nr_entries - 1];
+
+	if (!is_bt_node_leaf(r))
+		ARRAY_INSERT(r->links, 0, r->nr_entries + 1,
+			l->links[l->nr_entries]);
+
+	l->nr_entries--;
+	r->nr_entries++;
+}
+
+static bt_node *
+bt_merge_siblings(bt_node *parent, int idx)
+{
+	bt_node *n1, *n2;
+
+	if (idx == parent->nr_entries)
+		idx--;
+
+	n1 = parent->links[idx];
+	n2 = parent->links[idx + 1];
+
+	BUG_ON(n1->nr_entries + n2->nr_entries + 1 > MAX_UTIL_SLOTS);
+
+	memcpy(n1->slots + MIN_DEGREE, n2->slots,
+		sizeof(n1->slots[0]) * MIN_UTIL_SLOTS);
+
+	if (!is_bt_node_leaf(n1))
+		memcpy(n1->links + MIN_DEGREE, n2->links,
+			sizeof(n1->links[0]) * MIN_DEGREE);
+
+	n1->slots[MIN_UTIL_SLOTS] = parent->slots[idx];
+	n1->nr_entries += n2->nr_entries + 1;
+
+	ARRAY_MOVE(parent->slots, idx, idx + 1, parent->nr_entries);
+	ARRAY_MOVE(parent->links, idx + 1, idx + 2, parent->nr_entries + 1);
+
+	parent->links[idx] = n1;
+	parent->nr_entries--;
+
+	if (!parent->nr_entries && root == parent) {
+		bt_node_destroy(parent);
+		root = n1;
+	}
+
+	bt_node_destroy(n2);
+	return n1;
 }
 
 static int bt_remove(bt_node *root, unsigned long val)
 {
-	bt_node *n, *prev, *next;
-	int index;
+	bt_node *sub = root;
+	bt_node *parent;
+	int idx;
 
-	n = bt_search(root, val, &index);
-	if (!n)
-		return -1;
+	while (1) {
+		idx = bt_search_node_index(sub, val);
+		if (idx < sub->nr_entries &&
+				sub->slots[idx].va_start == val)
+			break;
 
-	if (is_bt_node_leaf(n)) {
-		bt_node_delete_key(n, index);
-		goto adjust;
+		/* Not found. */
+		if (is_bt_node_leaf(sub))
+			return -1;
+
+		parent = sub;
+		sub = sub->links[idx];
+
+		if (sub->nr_entries > MIN_UTIL_SLOTS)
+			continue;
+
+		if (idx < parent->nr_entries &&
+				parent->links[idx + 1]->nr_entries > MIN_UTIL_SLOTS)
+			bt_move_to_left(parent, idx);
+		else if (idx > 0 && parent->links[idx - 1]->nr_entries > MIN_UTIL_SLOTS)
+			bt_move_to_right(parent, idx - 1);
+		else
+			sub = bt_merge_siblings(parent, idx);
 	}
 
-	prev = bt_prev_sibling_of(n, index);
-	next = bt_next_sibling_of(n, index);
-
-	/*
-	 * Replace the key that is about to be removed,
-	 * by the one from the previous or next neighbor,
-	 * finally remove borrowed key from the sibling.
-	 */
-	if (prev->num_util_slots >= next->num_util_slots) {
-		n->slots[index].va_start =
-			prev->slots[prev->num_util_slots - 1].va_start;
-		bt_node_delete_key(prev, prev->num_util_slots - 1);
-		n = prev;
+loop:
+	if (is_bt_node_leaf(sub)) {
+		bt_node_delete_key(sub, idx);
 	} else {
-		n->slots[index].va_start = next->slots[0].va_start;
-		bt_node_delete_key(next, 0);
-		n = next;
-	}
+		if (sub->links[idx]->nr_entries > MIN_UTIL_SLOTS) {
+			bt_node *prev = bt_prev_sibling_of(sub, idx);
 
-adjust:
-	/*
-	 * Check if the anti-overflow has happened. It occurs
-	 * when the size of the node drops below min_degree - 1,
-	 * so the property of the tree has been violated. To fix
-	 * that merging or moving operations are required.
-	 */
-	if (n->num_util_slots < MIN_UTIL_SLOTS)
-		bt_adjust(n);
+			sub->slots[idx] = prev->slots[prev->nr_entries - 1];
+			bt_remove(sub->links[idx], sub->slots[idx].va_start);
+		} else if (sub->links[idx + 1]->nr_entries > MIN_UTIL_SLOTS) {
+			bt_node *next = bt_next_sibling_of(sub, idx);
+
+			sub->slots[idx] = next->slots[0];
+			bt_remove(sub->links[idx + 1], sub->slots[idx].va_start);
+		} else {
+			sub = bt_merge_siblings(sub, idx);
+			idx = MIN_UTIL_SLOTS;
+			goto loop;
+		}
+	}
 
 	return 0;
 }
@@ -345,7 +441,7 @@ static void build_graph(bt_node *n)
 
 	if (is_bt_node_leaf(n)) {
 		printf("\tnode%lu[label = \"", n->num);
-		for (i = 0; i < n->num_util_slots; i++)
+		for (i = 0; i < n->nr_entries; i++)
 			printf("%lu ", n->slots[i].va_start);
 
 		printf("\"];\n");
@@ -353,16 +449,16 @@ static void build_graph(bt_node *n)
 	}
 
 	printf("\tnode%lu[label = \"<p0>", n->num);
-	for (i = 0; i < n->num_util_slots; i++)
+	for (i = 0; i < n->nr_entries; i++)
 		printf(" |%lu| <p%d>", n->slots[i].va_start, i + 1);
 
 	printf("\"];\n");
 
-	for (i = 0; i <= n->num_util_slots; i++)
+	for (i = 0; i <= n->nr_entries; i++)
 		printf("\t\"node%lu\":p%d -> \"node%lu\"\n",
 			n->num, i, n->links[i]->num);
 
-	for (i = 0; i <= n->num_util_slots; i++)
+	for (i = 0; i <= n->nr_entries; i++)
 		build_graph(n->links[i]);
 }
 
@@ -376,7 +472,7 @@ static void assign_node_id(bt_node *n, int *num)
 	}
 
 	n->num = *num;
-	for (i = 0; i <= n->num_util_slots; i++) {
+	for (i = 0; i <= n->nr_entries; i++) {
 		(*num)++;
 		assign_node_id(n->links[i], num);
 	}
@@ -384,7 +480,7 @@ static void assign_node_id(bt_node *n, int *num)
 
 static void dump_tree(bt_node *root)
 {
-	int i, num = 0;
+	int num = 0;
 
 	assign_node_id(root, &num);
 
@@ -398,15 +494,6 @@ static void dump_tree(bt_node *root)
 #endif
 
 #include <time.h>
-
-static inline unsigned long
-now(void)
-{
-	struct timespec tp;
-
-	(void) clock_gettime(CLOCK_MONOTONIC, &tp);
-	return (tp.tv_sec * 1000000000) + tp.tv_nsec;
-}
 
 static inline void
 time_now(struct timespec *t)
@@ -444,8 +531,7 @@ int main(int argc, char **argv)
 	unsigned long max_nsec, d;
 	struct timespec a;
 	struct timespec b;
-	int i, pos, num;
-	int ret;
+	int i, pos;
 
 	(void) pthread_mutex_init(&lock, NULL);
 	root = bt_zalloc_node();
@@ -459,11 +545,9 @@ int main(int argc, char **argv)
 		/* array[i] = tree_size - i; */
 
 	for (i = 0, max_nsec = 0, d = 0; i < tree_size; i++) {
-		int ret;
-
 		pthread_mutex_lock(&lock);
 		time_now(&a);
-		ret = bt_insert(array[i]);
+		bt_insert(array[i]);
 		time_now(&b);
 		pthread_mutex_unlock(&lock);
 
@@ -494,6 +578,25 @@ int main(int argc, char **argv)
 	fprintf(stdout, "lookup: %lu nano/s, %f micro/s, max: %lu nsec\n",
 			d, (float) d / 1000, max_nsec);
 
-	/* dump_tree(root); */
+	for (i = 0, max_nsec = 0, d = 0; i < tree_size; i++) {
+		time_now(&a);
+		bt_remove(root, array[i]);
+		time_now(&b);
+
+		d += time_diff(&a, &b);
+
+		if (d > max_nsec)
+			max_nsec = d;
+	}
+
+	/* average */
+	d = d / i;
+	fprintf(stdout, "delete: %lu nano/s, %f micro/s, max: %lu nsec\n",
+			d, (float) d / 1000, max_nsec);
+
+	dump_tree(root);
+	bt_node_destroy(root);
+	free(array);
+
 	return 0;
 }

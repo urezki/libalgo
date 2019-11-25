@@ -22,7 +22,7 @@ typedef struct vaslot {
 
 typedef struct bt_node {
 	vaslot_t slots[MAX_UTIL_SLOTS];
-	unsigned int num_util_slots;
+	unsigned int nr_entries;
 	struct bt_node *parent;
 	struct bt_node *links[MAX_UTIL_SLOTS + 1];
 #ifdef DEBUG_BTREE

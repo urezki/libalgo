@@ -10,6 +10,8 @@
 #include <debug.h>
 #include <timer.h>
 
+#define ULONG_MAX	(~0UL)
+
 static void
 avl_dump(avl_node *n, FILE *fp)
 {
@@ -119,7 +121,7 @@ test_2()
 	array = calloc(tree_size, sizeof(struct avl_node));
 
 	for (i = 0; i < tree_size; i++)
-		array[i].key = rand() % 10000000000;
+		array[i].key = rand() % ULONG_MAX;
 		/* array[i].key = i; */
 		/* array[i].key = tree_size - i; */
 
