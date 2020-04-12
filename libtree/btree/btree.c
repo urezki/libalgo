@@ -6,15 +6,18 @@
 /* local */
 #include <btree.h>
 
+static bt_node *root;
+
 #define ULONG_MAX	(~0UL)
 
 #define ARRAY_MOVE(a, i, j, n)		\
 	memmove((a) + (i), (a) + (j), sizeof(*a) * ((n) - (j)))
 
+#define ARRAY_COPY(dest, src, n)	\
+	memcpy(dest, src, n)
+
 #define ARRAY_INSERT(a, i, j, n)	\
 	do { ARRAY_MOVE(a, (i) + 1, i, j); (a)[i] = (n); } while(0)
-
-static bt_node *root;
 
 static __always_inline bt_node *bt_zalloc_node(void)
 {
@@ -73,44 +76,11 @@ is_bt_node_leaf(bt_node *n)
 static __always_inline int
 bt_search_node_index(bt_node *n, unsigned long val)
 {
-	int i, unwind_loop_count;
+	register int i, entries;
 
-	/*
-	 * Use loop unrolling to eliminate cache misses.
-	 *
-	 * ~21% faster comparing to the regular loop on insert
-	 * operation. GCC version 8.3.0, Clang version 7.0.1-8,
-	 * x86_64.
-	 *
-	 * L1-dcache-misses:
-	 *
-	 *       │     for (i = 0; i < n->nr_entries; i++) {
-	 *  6.70 │       addl   $0x1,-0x2c(%rbp)
-	 *  3.04 │ 8f:   mov    -0x20(%rbp),%rax
-	 *  0.72 │       mov    0xf0(%rax),%edx
-	 * 24.49 │       mov    -0x2c(%rbp),%eax
-	 *  1.86 │       cmp    %eax,%edx
-	 *       │     ↑ ja     71
-	 *
-	 *       │     for (i = 0; i <= unwind_loop_count; i += 2) {
-	 *  6.43 │ c5:   addl   $0x2,-0x30(%rbp)
-	 *  1.36 │ c9:   mov    -0x2c(%rbp),%eax
-	 *  4.19 │       cmp    -0x30(%rbp),%eax
-	 *       │     ↑ jge    81
-	 */
-	unwind_loop_count = n->nr_entries - 2;
-
-	for (i = 0; i <= unwind_loop_count; i += 2) {
+	for (i = 0, entries = n->nr_entries; i < entries; i++) {
 		if (val <= n->slots[i].va_start)
-			return i;
-
-		if (val <= n->slots[i + 1].va_start)
-			return i + 1;
-	}
-
-	if (unwind_loop_count & 1) {
-		if (val > n->slots[i].va_start)
-			return i + 1;
+			break;
 	}
 
 	return i;
@@ -148,12 +118,13 @@ bt_split_child_node(bt_node *child, bt_node *parent, int pindex)
 	 *               A B     C D
 	 */
 
-	/* right part goes to the new node */
-	memcpy(n->slots, child->slots + MIN_DEGREE,
+	/* copy keys to the new node (right part) */
+	ARRAY_COPY(n->slots, child->slots + MIN_DEGREE,
 		sizeof(n->slots[0]) * (MIN_DEGREE - 1));
 
+	/* copy links to the new node (right part) */
 	if (!is_bt_node_leaf(child))
-		memcpy(n->links, child->links + MIN_DEGREE,
+		ARRAY_COPY(n->links, child->links + MIN_DEGREE,
 			sizeof(child->links[0]) * MIN_DEGREE);
 
 	/*
@@ -163,32 +134,17 @@ bt_split_child_node(bt_node *child, bt_node *parent, int pindex)
 	child->nr_entries = MIN_DEGREE - 1;
 	n->nr_entries = MIN_DEGREE - 1;
 
-	if (pindex < parent->nr_entries) {
-		/* parent must have at least one spot */
-		BUG_ON(pindex + 1 >= MAX_UTIL_SLOTS);
+	/* Post the new separator key to the parent node. */
+	ARRAY_INSERT(parent->slots, pindex,
+		parent->nr_entries, child->slots[MIN_DEGREE - 1]);
 
-		/* new key goes in pindex */
-		ARRAY_MOVE(parent->slots, pindex + 1, pindex,
-			parent->nr_entries);
-
-		/* new kid(n) goes in pindex + 1 */
-		ARRAY_MOVE(parent->links, pindex + 2, pindex + 1,
-			parent->nr_entries + 1);
-	}
-
-	/* Post the new separator key/slot to the parent node. */
-	parent->slots[pindex] = child->slots[MIN_DEGREE - 1];
-
-	/*
-	 * Set left/right kids and increase
-	 * number of the parent node slots.
-	 */
-	parent->links[pindex] = child;
-	parent->links[pindex + 1] = n;
-	parent->nr_entries++;
+	/* new right kid(n) goes in pindex + 1 */
+	ARRAY_INSERT(parent->links, pindex + 1,
+		parent->nr_entries + 1, n);
 
 	/* Set the parent for both kids */
 	n->parent = child->parent = parent;
+	parent->nr_entries++;
 }
 
 /* Splits the root node */
@@ -197,7 +153,10 @@ bt_split_root_node(bt_node *root)
 {
 	bt_node *new_root = bt_zalloc_node();
 
+	/* Old root becomes left kid. */
+	new_root->links[0] = root;
 	bt_split_child_node(root, new_root, 0);
+
 	return new_root;
 }
 
@@ -354,16 +313,20 @@ bt_merge_siblings(bt_node *parent, int idx)
 
 	BUG_ON(n1->nr_entries + n2->nr_entries + 1 > MAX_UTIL_SLOTS);
 
-	memcpy(n1->slots + MIN_DEGREE, n2->slots,
+	/* copy keys to n1 from the n2 */
+	ARRAY_COPY(n1->slots + MIN_DEGREE, n2->slots,
 		sizeof(n1->slots[0]) * MIN_UTIL_SLOTS);
 
+	/* copy links to n1 from the n2 */
 	if (!is_bt_node_leaf(n1))
-		memcpy(n1->links + MIN_DEGREE, n2->links,
+		ARRAY_COPY(n1->links + MIN_DEGREE, n2->links,
 			sizeof(n1->links[0]) * MIN_DEGREE);
 
-	n1->slots[MIN_UTIL_SLOTS] = parent->slots[idx];
-	n1->nr_entries += n2->nr_entries + 1;
+	/* copy parent separator key */
+	n1->slots[MIN_DEGREE - 1] = parent->slots[idx];
+	n1->nr_entries = MAX_UTIL_SLOTS;
 
+	/* remove copied key from the parent */
 	ARRAY_MOVE(parent->slots, idx, idx + 1, parent->nr_entries);
 	ARRAY_MOVE(parent->links, idx + 1, idx + 2, parent->nr_entries + 1);
 
@@ -528,10 +491,9 @@ int main(int argc, char **argv)
 {
 	unsigned long *array;
 	unsigned int tree_size = 1000000;
-	unsigned long max_nsec, d;
-	struct timespec a;
-	struct timespec b;
-	int i, pos;
+	unsigned long max_nsec, d, diff;
+	struct timespec a, b;
+	int i, pos, ret;
 
 	(void) pthread_mutex_init(&lock, NULL);
 	root = bt_zalloc_node();
@@ -539,21 +501,22 @@ int main(int argc, char **argv)
 
 	srand(time(NULL));
 
-	for (i = 0; i < tree_size; i++)
-		array[i] = rand() % ULONG_MAX;
-		/* array[i] = i; */
-		/* array[i] = tree_size - i; */
-
 	for (i = 0, max_nsec = 0, d = 0; i < tree_size; i++) {
-		pthread_mutex_lock(&lock);
-		time_now(&a);
-		bt_insert(array[i]);
-		time_now(&b);
-		pthread_mutex_unlock(&lock);
+		do {
+			array[i] = (rand() % ULONG_MAX);
 
-		d += time_diff(&a, &b);
-		if (d > max_nsec)
-			max_nsec = d;
+			pthread_mutex_lock(&lock);
+			time_now(&a);
+			ret = bt_insert(array[i]);
+			time_now(&b);
+			pthread_mutex_unlock(&lock);
+		} while (ret);
+
+		diff = time_diff(&a, &b);
+		d += diff;
+
+		if (diff > max_nsec)
+			max_nsec = diff;
 	}
 
 	/* average */
@@ -563,14 +526,14 @@ int main(int argc, char **argv)
 
 	for (i = 0, max_nsec = 0, d = 0; i < tree_size; i++) {
 		time_now(&a);
-		if (!bt_search(root, array[i], &pos))
-			fprintf(stdout, "val %lu not found\n", array[i]);
+		(void) bt_search(root, array[i], &pos);
 		time_now(&b);
 
-		d += time_diff(&a, &b);
+		diff = time_diff(&a, &b);
+		d += diff;
 
-		if (d > max_nsec)
-			max_nsec = d;
+		if (diff > max_nsec)
+			max_nsec = diff;
 	}
 
 	/* average */
@@ -583,10 +546,11 @@ int main(int argc, char **argv)
 		bt_remove(root, array[i]);
 		time_now(&b);
 
-		d += time_diff(&a, &b);
+		diff = time_diff(&a, &b);
+		d += diff;
 
-		if (d > max_nsec)
-			max_nsec = d;
+		if (diff > max_nsec)
+			max_nsec = diff;
 	}
 
 	/* average */

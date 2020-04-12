@@ -30,7 +30,7 @@ avl_dump(avl_node *n, FILE *fp)
 static void
 avl_dump_to_file(avl_node *n, const char *file)
 {
-	FILE *fp, rv;
+	FILE *fp;
 
 	fp = fopen(file, "w");
 	if (fp) {
@@ -104,37 +104,32 @@ static void
 test_2()
 {
 	struct avl_node *root = NULL;
-	struct timespec a;
-	struct timespec b;
-	uint64_t d = 0;
-	int i = 0;
-	int rv;
-	int error = 0;
-	unsigned long max_nsec = 0;
 	unsigned int tree_size = 1000000;
+	unsigned long max_nsec, d, diff;
 	struct avl_node *array;
+	struct timespec a, b;
+	int i, ret;
 
 	(void) pthread_mutex_init(&lock, NULL);
-
+	array = calloc(tree_size, sizeof(struct avl_node));
 	srand(time(NULL));
 
-	array = calloc(tree_size, sizeof(struct avl_node));
+	for (i = 0, max_nsec = 0, d = 0; i < tree_size; i++) {
+		do {
+			array[i].key = (rand() % ULONG_MAX);
 
-	for (i = 0; i < tree_size; i++)
-		array[i].key = rand() % ULONG_MAX;
-		/* array[i].key = i; */
-		/* array[i].key = tree_size - i; */
+			pthread_mutex_lock(&lock);
+			time_now(&a);
+			ret = avl_insert(&root, &array[i]);
+			time_now(&b);
+			pthread_mutex_unlock(&lock);
+		} while (!ret);
 
-	for (i = 0, max_nsec = 0; i < tree_size; i++) {
-		pthread_mutex_lock(&lock);
-		time_now(&a);
-		rv = avl_insert(&root, &array[i]);
-		time_now(&b);
-		pthread_mutex_unlock(&lock);
+		diff = time_diff(&a, &b);
+		d += diff;
 
-		d += time_diff(&a, &b);
-		if (d > max_nsec)
-			max_nsec = d;
+		if (diff > max_nsec)
+			max_nsec = diff;
 	}
 
 	/* average */
@@ -144,17 +139,15 @@ test_2()
 
 	/* lookup */
 	for (i = 0, d = 0, max_nsec = 0; i < tree_size; i++) {
-		struct avl_node *tmp;
-		size_t key;
-
 		time_now(&a);
-		tmp = avl_lookup(root, array[i].key);
+		(void) avl_lookup(root, array[i].key);
 		time_now(&b);
 
-		d += time_diff(&a, &b);
+		diff = time_diff(&a, &b);
+		d += diff;
 
-		if (d > max_nsec)
-			max_nsec = d;
+		if (diff > max_nsec)
+			max_nsec = diff;
 	}
 
 	/* average */
