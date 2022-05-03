@@ -33,8 +33,8 @@ static __always_inline bt_node *bt_zalloc_node(void)
 
 static __always_inline bt_node *bt_max_node(bt_node *n)
 {
-	while (n->links[n->nr_entries])
-		n = n->links[n->nr_entries];
+	while (n->links[n->slot_len])
+		n = n->links[n->slot_len];
 
 	return n;
 }
@@ -64,7 +64,7 @@ bt_next_sibling_of(bt_node *n, int index)
 static __always_inline int
 is_bt_node_full(bt_node *n)
 {
-	return (n->nr_entries == MAX_UTIL_SLOTS);
+	return (n->slot_len == MAX_NODE_SLOTS);
 }
 
 static __always_inline int
@@ -74,12 +74,12 @@ is_bt_node_leaf(bt_node *n)
 }
 
 static __always_inline int
-bt_search_node_index(bt_node *n, unsigned long val)
+bt_search_node_index(bt_node *n, void *val)
 {
 	register int i, entries;
 
-	for (i = 0, entries = n->nr_entries; i < entries; i++) {
-		if (val <= n->slots[i].va_start)
+	for (i = 0, entries = n->slot_len; i < entries; i++) {
+		if (val <= n->slot[i])
 			break;
 	}
 
@@ -87,16 +87,16 @@ bt_search_node_index(bt_node *n, unsigned long val)
 }
 
 static __always_inline void
-bt_insert_to_node(bt_node *n, int index, unsigned long val)
+bt_insert_to_node(bt_node *n, int index, void *val)
 {
-	BUG_ON(index >= MAX_UTIL_SLOTS);
+	BUG_ON(index >= MAX_NODE_SLOTS);
 
-	if (index < n->nr_entries)
-		ARRAY_MOVE(n->slots, index + 1, index,
-			n->nr_entries);
+	if (index < n->slot_len)
+		ARRAY_MOVE(n->slot, index + 1, index,
+			n->slot_len);
 
-	n->slots[index].va_start = val;
-	n->nr_entries++;
+	n->slot[index] = val;
+	n->slot_len++;
 }
 
 /* Splits the child node into two peaces */
@@ -119,8 +119,8 @@ bt_split_child_node(bt_node *child, bt_node *parent, int pindex)
 	 */
 
 	/* copy keys to the new node (right part) */
-	ARRAY_COPY(n->slots, child->slots + MIN_DEGREE,
-		sizeof(n->slots[0]) * (MIN_DEGREE - 1));
+	ARRAY_COPY(n->slot, child->slot + MIN_DEGREE,
+		sizeof(n->slot[0]) * (MIN_DEGREE - 1));
 
 	/* copy links to the new node (right part) */
 	if (!is_bt_node_leaf(child))
@@ -131,20 +131,20 @@ bt_split_child_node(bt_node *child, bt_node *parent, int pindex)
 	 * Cut the size of the left child and set
 	 * the size of the newly created right one.
 	 */
-	child->nr_entries = MIN_DEGREE - 1;
-	n->nr_entries = MIN_DEGREE - 1;
+	child->slot_len = MIN_DEGREE - 1;
+	n->slot_len = MIN_DEGREE - 1;
 
 	/* Post the new separator key to the parent node. */
-	ARRAY_INSERT(parent->slots, pindex,
-		parent->nr_entries, child->slots[MIN_DEGREE - 1]);
+	ARRAY_INSERT(parent->slot, pindex,
+		parent->slot_len, child->slot[MIN_DEGREE - 1]);
 
 	/* new right kid(n) goes in pindex + 1 */
 	ARRAY_INSERT(parent->links, pindex + 1,
-		parent->nr_entries + 1, n);
+		parent->slot_len + 1, n);
 
 	/* Set the parent for both kids */
 	n->parent = child->parent = parent;
-	parent->nr_entries++;
+	parent->slot_len++;
 }
 
 /* Splits the root node */
@@ -166,7 +166,7 @@ bt_split_root_node(bt_node *root)
  * methodology when the maximum of keys in a node is
  * odd, i.e. 2t - 1. Uses preemptive splitting.
  */
-static int bt_insert(unsigned long val)
+static int bt_insert(void *val)
 {
 	bt_node *n;
 	int index;
@@ -181,8 +181,8 @@ static int bt_insert(unsigned long val)
 
 	while (1) {
 		index = bt_search_node_index(n, val);
-		if (index < n->nr_entries &&
-				n->slots[index].va_start == val)
+		if (index < n->slot_len &&
+				n->slot[index] == val)
 			break;
 
 		/* Hit the bottom. */
@@ -204,10 +204,10 @@ static int bt_insert(unsigned long val)
 			 * inserted, i.e. two identical keys are not
 			 * allowed.
 			 */
-			if (unlikely(n->slots[index].va_start == val))
+			if (unlikely(n->slot[index] == val))
 				break;
 
-			if (val > n->slots[index].va_start)
+			if (val > n->slot[index])
 				index++;
 		}
 
@@ -218,14 +218,14 @@ static int bt_insert(unsigned long val)
 }
 
 static bt_node *
-bt_search(bt_node *n, unsigned long val, int *pos)
+bt_search(bt_node *n, void *val, int *pos)
 {
 	int index;
 
 	while (1) {
 		index = bt_search_node_index(n, val);
-		if (index < n->nr_entries &&
-				n->slots[index].va_start == val) {
+		if (index < n->slot_len &&
+				n->slot[index] == val) {
 			*pos = index;
 			return n;
 		}
@@ -257,11 +257,11 @@ bt_node_delete_key(bt_node *n, int idx)
 	 * in array to index number zero, after that
 	 * decrease number of elements in it.
 	 */
-	if (idx < n->nr_entries - 1)
-		ARRAY_MOVE(n->slots, idx, idx + 1,
-			n->nr_entries);
+	if (idx < n->slot_len - 1)
+		ARRAY_MOVE(n->slot, idx, idx + 1,
+			n->slot_len);
 
-	n->nr_entries--;
+	n->slot_len--;
 }
 
 static void bt_move_to_left(bt_node *parent, int idx)
@@ -269,17 +269,17 @@ static void bt_move_to_left(bt_node *parent, int idx)
 	bt_node *l = parent->links[idx];
 	bt_node *r = parent->links[idx + 1];
 
-	l->slots[l->nr_entries] = parent->slots[idx];
-	parent->slots[idx] = r->slots[0];
-	ARRAY_MOVE(r->slots, 0, 1, r->nr_entries);
+	l->slot[l->slot_len] = parent->slot[idx];
+	parent->slot[idx] = r->slot[0];
+	ARRAY_MOVE(r->slot, 0, 1, r->slot_len);
 
 	if (!is_bt_node_leaf(r)) {
-		l->links[l->nr_entries + 1] = r->links[0];
-		ARRAY_MOVE(r->links, 0, 1, r->nr_entries + 1);
+		l->links[l->slot_len + 1] = r->links[0];
+		ARRAY_MOVE(r->links, 0, 1, r->slot_len + 1);
 	}
 
-	r->nr_entries--;
-	l->nr_entries++;
+	r->slot_len--;
+	l->slot_len++;
 }
 
 static void bt_move_to_right(bt_node *parent, int idx)
@@ -287,17 +287,17 @@ static void bt_move_to_right(bt_node *parent, int idx)
 	bt_node *l = parent->links[idx];
 	bt_node *r = parent->links[idx + 1];
 
-	ARRAY_INSERT(r->slots, 0, r->nr_entries,
-		parent->slots[idx]);
+	ARRAY_INSERT(r->slot, 0, r->slot_len,
+		parent->slot[idx]);
 
-	parent->slots[idx] = l->slots[l->nr_entries - 1];
+	parent->slot[idx] = l->slot[l->slot_len - 1];
 
 	if (!is_bt_node_leaf(r))
-		ARRAY_INSERT(r->links, 0, r->nr_entries + 1,
-			l->links[l->nr_entries]);
+		ARRAY_INSERT(r->links, 0, r->slot_len + 1,
+			l->links[l->slot_len]);
 
-	l->nr_entries--;
-	r->nr_entries++;
+	l->slot_len--;
+	r->slot_len++;
 }
 
 static bt_node *
@@ -305,17 +305,17 @@ bt_merge_siblings(bt_node *parent, int idx)
 {
 	bt_node *n1, *n2;
 
-	if (idx == parent->nr_entries)
+	if (idx == parent->slot_len)
 		idx--;
 
 	n1 = parent->links[idx];
 	n2 = parent->links[idx + 1];
 
-	BUG_ON(n1->nr_entries + n2->nr_entries + 1 > MAX_UTIL_SLOTS);
+	BUG_ON(n1->slot_len + n2->slot_len + 1 > MAX_NODE_SLOTS);
 
 	/* copy keys to n1 from the n2 */
-	ARRAY_COPY(n1->slots + MIN_DEGREE, n2->slots,
-		sizeof(n1->slots[0]) * MIN_UTIL_SLOTS);
+	ARRAY_COPY(n1->slot + MIN_DEGREE, n2->slot,
+		sizeof(n1->slot[0]) * MIN_NODE_SLOTS);
 
 	/* copy links to n1 from the n2 */
 	if (!is_bt_node_leaf(n1))
@@ -323,17 +323,17 @@ bt_merge_siblings(bt_node *parent, int idx)
 			sizeof(n1->links[0]) * MIN_DEGREE);
 
 	/* copy parent separator key */
-	n1->slots[MIN_DEGREE - 1] = parent->slots[idx];
-	n1->nr_entries = MAX_UTIL_SLOTS;
+	n1->slot[MIN_DEGREE - 1] = parent->slot[idx];
+	n1->slot_len = MAX_NODE_SLOTS;
 
 	/* remove copied key from the parent */
-	ARRAY_MOVE(parent->slots, idx, idx + 1, parent->nr_entries);
-	ARRAY_MOVE(parent->links, idx + 1, idx + 2, parent->nr_entries + 1);
+	ARRAY_MOVE(parent->slot, idx, idx + 1, parent->slot_len);
+	ARRAY_MOVE(parent->links, idx + 1, idx + 2, parent->slot_len + 1);
 
 	parent->links[idx] = n1;
-	parent->nr_entries--;
+	parent->slot_len--;
 
-	if (!parent->nr_entries && root == parent) {
+	if (!parent->slot_len && root == parent) {
 		bt_node_destroy(parent);
 		root = n1;
 	}
@@ -342,7 +342,7 @@ bt_merge_siblings(bt_node *parent, int idx)
 	return n1;
 }
 
-static int bt_remove(bt_node *root, unsigned long val)
+static int bt_remove(bt_node *root, void *val)
 {
 	bt_node *sub = root;
 	bt_node *parent;
@@ -350,8 +350,8 @@ static int bt_remove(bt_node *root, unsigned long val)
 
 	while (1) {
 		idx = bt_search_node_index(sub, val);
-		if (idx < sub->nr_entries &&
-				sub->slots[idx].va_start == val)
+		if (idx < sub->slot_len &&
+				sub->slot[idx] == val)
 			break;
 
 		/* Not found. */
@@ -361,13 +361,13 @@ static int bt_remove(bt_node *root, unsigned long val)
 		parent = sub;
 		sub = sub->links[idx];
 
-		if (sub->nr_entries > MIN_UTIL_SLOTS)
+		if (sub->slot_len > MIN_NODE_SLOTS)
 			continue;
 
-		if (idx < parent->nr_entries &&
-				parent->links[idx + 1]->nr_entries > MIN_UTIL_SLOTS)
+		if (idx < parent->slot_len &&
+				parent->links[idx + 1]->slot_len > MIN_NODE_SLOTS)
 			bt_move_to_left(parent, idx);
-		else if (idx > 0 && parent->links[idx - 1]->nr_entries > MIN_UTIL_SLOTS)
+		else if (idx > 0 && parent->links[idx - 1]->slot_len > MIN_NODE_SLOTS)
 			bt_move_to_right(parent, idx - 1);
 		else
 			sub = bt_merge_siblings(parent, idx);
@@ -377,19 +377,19 @@ loop:
 	if (is_bt_node_leaf(sub)) {
 		bt_node_delete_key(sub, idx);
 	} else {
-		if (sub->links[idx]->nr_entries > MIN_UTIL_SLOTS) {
+		if (sub->links[idx]->slot_len > MIN_NODE_SLOTS) {
 			bt_node *prev = bt_prev_sibling_of(sub, idx);
 
-			sub->slots[idx] = prev->slots[prev->nr_entries - 1];
-			bt_remove(sub->links[idx], sub->slots[idx].va_start);
-		} else if (sub->links[idx + 1]->nr_entries > MIN_UTIL_SLOTS) {
+			sub->slot[idx] = prev->slot[prev->slot_len - 1];
+			bt_remove(sub->links[idx], sub->slot[idx]);
+		} else if (sub->links[idx + 1]->slot_len > MIN_NODE_SLOTS) {
 			bt_node *next = bt_next_sibling_of(sub, idx);
 
-			sub->slots[idx] = next->slots[0];
-			bt_remove(sub->links[idx + 1], sub->slots[idx].va_start);
+			sub->slot[idx] = next->slot[0];
+			bt_remove(sub->links[idx + 1], sub->slot[idx]);
 		} else {
 			sub = bt_merge_siblings(sub, idx);
-			idx = MIN_UTIL_SLOTS;
+			idx = MIN_NODE_SLOTS;
 			goto loop;
 		}
 	}
@@ -404,24 +404,24 @@ static void build_graph(bt_node *n)
 
 	if (is_bt_node_leaf(n)) {
 		printf("\tnode%lu[label = \"", n->num);
-		for (i = 0; i < n->nr_entries; i++)
-			printf("%lu ", n->slots[i].va_start);
+		for (i = 0; i < n->slot_len; i++)
+			printf("%lu ", (unsigned long) n->slot[i]);
 
 		printf("\"];\n");
 		return;
 	}
 
 	printf("\tnode%lu[label = \"<p0>", n->num);
-	for (i = 0; i < n->nr_entries; i++)
-		printf(" |%lu| <p%d>", n->slots[i].va_start, i + 1);
+	for (i = 0; i < n->slot_len; i++)
+		printf(" |%lu| <p%d>", (unsigned long) n->slot[i], i + 1);
 
 	printf("\"];\n");
 
-	for (i = 0; i <= n->nr_entries; i++)
+	for (i = 0; i <= n->slot_len; i++)
 		printf("\t\"node%lu\":p%d -> \"node%lu\"\n",
 			n->num, i, n->links[i]->num);
 
-	for (i = 0; i <= n->nr_entries; i++)
+	for (i = 0; i <= n->slot_len; i++)
 		build_graph(n->links[i]);
 }
 
@@ -435,7 +435,7 @@ static void assign_node_id(bt_node *n, int *num)
 	}
 
 	n->num = *num;
-	for (i = 0; i <= n->nr_entries; i++) {
+	for (i = 0; i <= n->slot_len; i++) {
 		(*num)++;
 		assign_node_id(n->links[i], num);
 	}
@@ -484,32 +484,61 @@ time_diff(struct timespec *a, struct timespec *b)
 	return (res.tv_sec * 1000000000) + res.tv_nsec;
 }
 
-#include <pthread.h>
-pthread_mutex_t lock;
+static int bt_depth(bt_node *n)
+{
+	int depth = 0;
+
+	while (n) {
+		n = n->links[0];
+		depth++;
+	}
+
+	return depth;
+}
+
+static void
+shuffle(void *array, int numels, int elsize)
+{
+	char tmp[elsize];
+	char *arr = array;
+	int i, j;
+
+	for (i = 0; i < numels - 1; i++) {
+		j = i + rand() / (RAND_MAX / (numels - i) + 1);
+
+		memcpy(tmp, arr + j * elsize, elsize);
+		memcpy(arr + j * elsize, arr + i * elsize, elsize);
+		memcpy(arr + i * elsize, tmp, elsize);
+	}
+}
 
 int main(int argc, char **argv)
 {
-	unsigned long *array;
 	unsigned int tree_size = 1000000;
+	unsigned long *array;
 	unsigned long max_nsec, d, diff;
 	struct timespec a, b;
 	int i, pos, ret;
 
-	(void) pthread_mutex_init(&lock, NULL);
 	root = bt_zalloc_node();
 	array = calloc(tree_size, sizeof(unsigned long));
+	BUG_ON(array == NULL);
+
+	for (i = 0; i < tree_size; i++)
+		array[i] = i;
 
 	srand(time(NULL));
+	shuffle(array, tree_size, sizeof(unsigned long));
 
 	for (i = 0, max_nsec = 0, d = 0; i < tree_size; i++) {
 		do {
-			array[i] = (rand() % ULONG_MAX);
-
-			pthread_mutex_lock(&lock);
 			time_now(&a);
-			ret = bt_insert(array[i]);
+			ret = bt_insert((void *) array[i]);
 			time_now(&b);
-			pthread_mutex_unlock(&lock);
+
+			if (ret)
+				fprintf(stdout, "-> error to insert %lu\n", array[i]);
+
 		} while (ret);
 
 		diff = time_diff(&a, &b);
@@ -519,6 +548,8 @@ int main(int argc, char **argv)
 			max_nsec = diff;
 	}
 
+	/* dump_tree(root); */
+
 	/* average */
 	d = d / i;
 	fprintf(stdout, "insertion: %lu nano/s, %f micro/s, max: %lu nsec\n",
@@ -526,7 +557,7 @@ int main(int argc, char **argv)
 
 	for (i = 0, max_nsec = 0, d = 0; i < tree_size; i++) {
 		time_now(&a);
-		(void) bt_search(root, array[i], &pos);
+		(void) bt_search(root, (void *) array[i], &pos);
 		time_now(&b);
 
 		diff = time_diff(&a, &b);
@@ -539,11 +570,14 @@ int main(int argc, char **argv)
 	/* average */
 	d = d / i;
 	fprintf(stdout, "lookup: %lu nano/s, %f micro/s, max: %lu nsec\n",
-			d, (float) d / 1000, max_nsec);
+		d, (float) d / 1000, max_nsec);
+
+	fprintf(stdout, "-> btree depth is %d, bt-node size: %ld\n",
+		bt_depth(root), sizeof(struct bt_node));
 
 	for (i = 0, max_nsec = 0, d = 0; i < tree_size; i++) {
 		time_now(&a);
-		bt_remove(root, array[i]);
+		bt_remove(root, (void *) array[i]);
 		time_now(&b);
 
 		diff = time_diff(&a, &b);
@@ -556,9 +590,9 @@ int main(int argc, char **argv)
 	/* average */
 	d = d / i;
 	fprintf(stdout, "delete: %lu nano/s, %f micro/s, max: %lu nsec\n",
-			d, (float) d / 1000, max_nsec);
+		d, (float) d / 1000, max_nsec);
 
-	dump_tree(root);
+	/* dump_tree(root); */
 	bt_node_destroy(root);
 	free(array);
 

@@ -11,18 +11,17 @@
  * The bound can be expressed in terms of a fixed integer
  * that must be t >= 2 called the minimum degree of the B-tree
  */
-#define MIN_DEGREE (12)
-#define MIN_UTIL_SLOTS (MIN_DEGREE - 1)
-#define MAX_UTIL_SLOTS (2 * MIN_DEGREE - 1)
+#define MIN_DEGREE (16)
+#define MAX_DEGREE (2 * MIN_DEGREE)
 
-typedef struct vaslot {
-	unsigned long va_start;
-} vaslot_t;
+#define MIN_NODE_SLOTS (MIN_DEGREE - 1)
+#define MAX_NODE_SLOTS (MAX_DEGREE - 1)
 
 typedef struct bt_node {
-	unsigned long nr_entries;
-	vaslot_t slots[MAX_UTIL_SLOTS];
-	struct bt_node *links[MAX_UTIL_SLOTS + 1];
+	void *slot[MAX_NODE_SLOTS];
+	unsigned char slot_len;
+
+	struct bt_node *links[MAX_NODE_SLOTS + 1];
 	struct bt_node *parent;
 #ifdef DEBUG_BTREE
 	unsigned long num;			/* for debug */
