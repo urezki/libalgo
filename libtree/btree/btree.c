@@ -73,17 +73,30 @@ is_bt_node_leaf(bt_node *n)
 	return (n->links[0] == NULL);
 }
 
+/* return smallest index i in sorted array such that key <= a[i] */
+/* (or n if there is no such index) */
 static __always_inline int
-bt_search_node_index(bt_node *n, void *val)
+bt_search_node_index(bt_node *n, void *key)
 {
-	register int i, entries;
+    int lo, hi;
+    int mid;
 
-	for (i = 0, entries = n->slot_len; i < entries; i++) {
-		if (val <= n->slot[i])
-			break;
+    /* invariant: a[lo] < key <= a[hi] */
+    lo = -1;
+    hi = n->slot_len;
+
+	while (lo + 1 < hi) {
+		mid = (lo + hi) / 2;
+
+		if (n->slot[mid] == key)
+			return mid;
+		else if (n->slot[mid] < key)
+			lo = mid;
+		else
+			hi = mid;
 	}
 
-	return i;
+    return hi;
 }
 
 static __always_inline void
@@ -496,20 +509,16 @@ static int bt_depth(bt_node *n)
 	return depth;
 }
 
-static void
-shuffle(void *array, int numels, int elsize)
+int rand_comparison(const void *a, const void *b)
 {
-	char tmp[elsize];
-	char *arr = array;
-	int i, j;
+	(void)a; (void)b;
+	return rand() % 2 ? +1 : -1;
+}
 
-	for (i = 0; i < numels - 1; i++) {
-		j = i + rand() / (RAND_MAX / (numels - i) + 1);
-
-		memcpy(tmp, arr + j * elsize, elsize);
-		memcpy(arr + j * elsize, arr + i * elsize, elsize);
-		memcpy(arr + i * elsize, tmp, elsize);
-	}
+void shuffle(void *base, size_t nmemb, size_t size)
+{
+	srand(time(NULL));
+	qsort(base, nmemb, size, rand_comparison);
 }
 
 int main(int argc, char **argv)
@@ -527,7 +536,6 @@ int main(int argc, char **argv)
 	for (i = 0; i < tree_size; i++)
 		array[i] = i;
 
-	srand(time(NULL));
 	shuffle(array, tree_size, sizeof(unsigned long));
 
 	for (i = 0, max_nsec = 0, d = 0; i < tree_size; i++) {
