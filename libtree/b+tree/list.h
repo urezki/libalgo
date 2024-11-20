@@ -63,4 +63,22 @@ static inline int list_empty(const struct list_head *head)
 	return head->next == head;
 }
 
+static inline struct list_head *
+list_prev_or_null(struct list_head *list, struct list_head *head)
+{
+	if (list_empty(list) || list->prev == head)
+		return NULL;
+
+	return list->prev;
+}
+
+static inline struct list_head *
+list_next_or_null(struct list_head *list, struct list_head *head)
+{
+	if (list_empty(list) || list->next == head)
+		return NULL;
+
+	return list->next;
+}
+
 #endif	/* __B_PLUS_LIST__ */

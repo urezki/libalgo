@@ -1,28 +1,20 @@
 #ifndef __B_PLUS_TREE__
 #define __B_PLUS_TREE__
 
+#include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
-#include "./list.h"
 
-typedef unsigned long ulong;
-typedef unsigned short u16;
+#include "list.h"
+
 typedef unsigned char u8;
 
+#define __must_check __attribute__((warn_unused_result))
 #define likely(x)   __builtin_expect((ulong) (x), 1)
 #define unlikely(x) __builtin_expect((ulong) (x), 0)
 
 #define BUG() *((char *) 0) = 0xff
 #define BUG_ON(cond) do { if (unlikely(cond)) BUG(); } while (0)
-
-#define ARRAY_MOVE(a, i, j, n)		\
-	memmove((a) + (i), (a) + (j), sizeof(*a) * ((n) - (j)))
-
-#define ARRAY_COPY(dest, src, n)	\
-	memcpy(dest, src, n)
-
-#define ARRAY_INSERT(a, i, j, n)	\
-	do { ARRAY_MOVE(a, (i) + 1, i, j); (a)[i] = (n); } while(0)
 
 /*
  * The standard definition of order for a tree is the maximum
@@ -39,16 +31,9 @@ typedef unsigned char u8;
 enum tree_properties {
 	TREE_ORDER = 4,
 	MAX_ENTRIES = (TREE_ORDER - 1),
-	MIN_ENTRIES_EXTER = MAX_ENTRIES >> 1,
-
 	MAX_CHILDREN = (TREE_ORDER),
-	MIN_CHILDREN = (MAX_CHILDREN >> 1),
-
-	/*
-	 * An internal node with N children has (N - 1)
-	 * search field values, i.e. the minimum number
-	 * of entries is MIN_CHILDREN - 1.
-	 */
+	MIN_CHILDREN = (TREE_ORDER >> 1),
+	MIN_ENTRIES_EXTER = MAX_ENTRIES >> 1,
 	MIN_ENTRIES_INTER = MIN_CHILDREN - 1,
 };
 
@@ -57,7 +42,8 @@ enum {
 	BP_TYPE_EXTER = 2,
 };
 
-#define NODE_SUB_LINK(n, idx) n->page.internal.sub_links[idx]
+/* Aliases. */
+#define SUB_LINKS page.internal.sub_links
 
 /* A common node structure. */
 struct node {
@@ -68,8 +54,8 @@ struct node {
 	} info;
 
 	/* indexes or records. */
+	ulong entries;
 	ulong slot[MAX_ENTRIES];
-	u8 entries;
 
 	/*
 	 * This union is used for differentiating between leaf
@@ -123,12 +109,80 @@ is_node_full(struct node *n)
 	return (n->entries == MAX_ENTRIES);
 }
 
+static inline int
+node_min_entries(struct node *n)
+{
+	return is_node_internal(n) ?
+		MIN_ENTRIES_INTER:MIN_ENTRIES_EXTER;
+}
+
+static inline int
+sub_entries(struct node *n)
+{
+	return n->entries + 1;
+}
+
+/*
+ * Removing or adding does not unbalance a node.
+ */
+static inline bool
+is_node_safe(struct node *n)
+{
+	int min_entries = node_min_entries(n);
+	return (n->entries > min_entries && n->entries != MAX_ENTRIES);
+}
+
+static inline bool
+is_node_gt_min(struct node *n)
+{
+	int min_entries = node_min_entries(n);
+	return (n->entries > min_entries);
+}
+
+static inline struct node *
+bp_prev_node_or_null(struct node *n, struct list_head *head)
+{
+	struct list_head *prev;
+
+	prev = list_prev_or_null(&n->page.external.list, head);
+	if (prev)
+		return list_entry(prev, struct node, page.external.list);
+
+	return NULL;
+}
+
+static inline struct node *
+bp_next_node_or_null(struct node *n, struct list_head *head)
+{
+	struct list_head *next;
+
+	next = list_next_or_null(&n->page.external.list, head);
+	if (next)
+		return list_entry(next, struct node, page.external.list);
+
+	return NULL;
+}
+
+static inline struct node *
+bp_get_left_child(struct node *parent, int pos)
+{
+	return (pos < parent->entries) ?
+		parent->SUB_LINKS[pos]:parent->SUB_LINKS[pos - 1];
+}
+
+static inline struct node *
+bp_get_right_child(struct node *parent, int pos)
+{
+	return (pos < parent->entries) ?
+		parent->SUB_LINKS[pos + 1]:parent->SUB_LINKS[pos];
+}
+
 static inline int bp_tree_high(struct node *n)
 {
 	int depth = 1;
 
 	while (is_node_internal(n)) {
-		n = NODE_SUB_LINK(n, 0);
+		n = n->SUB_LINKS[0];
 		depth++;
 	}
 
@@ -146,5 +200,11 @@ check_node_geometry(struct node *n)
 	else
 		BUG_ON(n->entries < MIN_ENTRIES_EXTER);
 }
+
+extern int bp_root_init(struct bp_root *);
+extern void bp_root_destroy(struct bp_root *);
+extern int bp_po_insert(struct bp_root *, ulong);
+extern bool bp_po_delete(struct bp_root *, ulong);
+extern struct node *bp_lookup(struct bp_root *, ulong, int *);
 
 #endif

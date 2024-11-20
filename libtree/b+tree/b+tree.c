@@ -1,70 +1,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
-#include <time.h>
 
 #include "b+tree.h"
+#include "array.h"
 
-#ifdef DEBUG_BP_TREE
-static void build_graph(struct node *n)
-{
-	int i;
-
-	if (is_node_external(n)) {
-		printf("\tnode%lu[label = \"", n->num);
-		for (i = 0; i < n->entries; i++)
-			printf("%lu ", n->slot[i]);
-
-		printf("\"];\n");
-		return;
-	}
-
-	printf("\tnode%lu[label = \"<p0>", n->num);
-	for (i = 0; i < n->entries; i++)
-		printf(" |%lu| <p%d>", (unsigned long) n->slot[i], i + 1);
-
-	printf("\"];\n");
-
-	for (i = 0; i <= n->entries; i++)
-		printf("\t\"node%lu\":p%d -> \"node%lu\"\n",
-			n->num, i, n->page.internal.sub_links[i]->num);
-
-	for (i = 0; i <= n->entries; i++)
-		build_graph(n->page.internal.sub_links[i]);
-}
-
-static void assign_node_id(struct node *n, int *num)
-{
-	int i;
-
-	if (is_node_external(n)) {
-		n->num = *num;
-		return;
-	}
-
-	n->num = *num;
-	for (i = 0; i <= n->entries; i++) {
-		(*num)++;
-		assign_node_id(n->page.internal.sub_links[i], num);
-	}
-}
-
-static void dump_tree(struct node *root)
-{
-	int num = 0;
-
-	assign_node_id(root, &num);
-
-	fprintf(stdout, "digraph G\n{\n");
-	fprintf(stdout, "node [shape = record,height=.1];\n");
-	build_graph(root);
-	fprintf(stdout, "}\n");
-
-	fprintf(stdout, "# run: ./a.out | dot -Tpng -o btree.png\n");
-}
-#endif
-
-static struct node *bp_calloc_node_init(u8 type)
+static struct node *
+bp_calloc_node_init(u8 type)
 {
 	struct node *n = calloc(1, sizeof(*n));
 
@@ -79,72 +21,206 @@ static struct node *bp_calloc_node_init(u8 type)
 	return n;
 }
 
-static int bp_init_tree(struct bp_root *root)
+/* Position condition codes. */
+typedef enum {
+	POS_CC_EQ = 0,					/* key = mkey */
+	POS_CC_LT = 1,					/* key < mkey */
+	POS_CC_GT = 2,					/* key > mkey */
+} pos_cc_t;
+
+/*
+ * Returns an index j, such that array[j-1] < key <= array[j].
+ * Example, array = 3 4 6 7, if key=5 then j=2, if key=8, j=4.
+ */
+static __always_inline pos_cc_t
+bp_binary_search(struct node *n, ulong key, int *pos)
 {
-	root->node = bp_calloc_node_init(BP_TYPE_EXTER);
-	if (!root->node)
+	pos_cc_t pos_cc;
+	int l, r;
+
+	check_node_geometry(n);
+
+	l = -1;
+	r = n->entries;
+
+	/* invariant: a[lo] < key <= a[hi] */
+	while (l + 1 < r) {
+		int m = (l + r) >> 1;
+		(n->slot[m] < key) ? (l = m):(r = m);
+	}
+
+	if (r < n->entries) {
+		if (n->slot[r] == key)
+			pos_cc = POS_CC_EQ;
+		else
+			pos_cc = POS_CC_LT;
+	} else {
+		pos_cc = POS_CC_GT;
+	}
+
+	if (pos)
+		*pos = r;
+
+	return pos_cc;
+}
+
+static __always_inline int
+bp_insert_to_node(struct node *n, int pos, ulong val)
+{
+	BUG_ON(pos >= MAX_ENTRIES);
+
+	/* First position can be garbage(if empty node). */
+	if (n->entries)
+		/* No duplicate keys. */
+		if (unlikely(n->slot[pos] == val))
+			return -1;
+
+	array_insert(n->slot, pos, n->entries, val);
+	n->entries++;
+	return 0;
+}
+
+static __always_inline int
+bp_remove_from_node(struct node *n, int pos, ulong val)
+{
+	BUG_ON(pos >= MAX_ENTRIES);
+
+	/* Wrong position or value? */
+	if (unlikely(n->slot[pos] != val))
 		return -1;
 
+	array_remove(n->slot, pos, n->entries);
+	n->entries--;
 	return 0;
 }
 
 /*
- * Return smallest index "i" in a sorted array such that
- * a "key <= a[i]". Otherwise -1 is returned if there is
- * no such index.
+ * NOTE: it does not introduce dis-balance to left nor right nodes!
  */
-static __always_inline int
-bp_search_node_index(struct node *n, ulong key)
+static bool
+bp_try_shift_left(struct node *l, struct node *r, struct node *p, int pos)
 {
-    int lo, hi, mid;
+	/* Adjust position. */
+	if (pos == p->entries)
+		pos--;
 
-	check_node_geometry(n);
+	/*
+	 * Bail out if:
+	 * - position is wrong;
+	 * - no way to shift left(it is full);
+	 * - right becomes unbalanced.
+	 */
+	if (pos >= p->entries || is_node_full(l) || !is_node_gt_min(r))
+		return false;
 
-    /* invariant: a[lo] < key <= a[hi] */
-    lo = -1;
-    hi = n->entries;
+	if (is_node_internal(l)) {
+		l->slot[l->entries] = p->slot[pos];
+		p->slot[pos] = r->slot[0];
 
-	while (lo + 1 < hi) {
-		mid = (lo + hi) / 2;
-
-		if (n->slot[mid] == key)
-			return mid;
-		else if (n->slot[mid] < key)
-			lo = mid;
-		else
-			hi = mid;
+		l->SUB_LINKS[l->entries + 1] = r->SUB_LINKS[0];
+		array_move(r->SUB_LINKS, 0, 1, sub_entries(r));
+	} else {
+		/*
+		 * TODO: leafs store only payload data. It does not keep
+		 * indexes. An index can be extracted from the payload
+		 * data in order to update parent.
+		 */
+		l->slot[l->entries] = r->slot[0];
+		p->slot[pos] = r->slot[1];
 	}
 
-    return hi;
+	/* Remove the element from right node. */
+	array_move(r->slot, 0, 1, r->entries);
+
+	r->entries--;
+	l->entries++;
+	return true;
 }
 
-static __always_inline int
-bp_insert_to_node(struct node *n, int index, ulong val)
+/*
+ * @l: @r: @p: left, right, parent
+ * @pos: a separator position in a parent node between left and right children
+ *
+ * NOTE: it does not introduce dis-balance to left nor right nodes!
+ */
+static bool
+bp_try_shift_right(struct node *l, struct node *r, struct node *p, int pos)
 {
-	BUG_ON(index >= MAX_ENTRIES);
+	/* Adjust position. */
+	if (pos == p->entries)
+		pos--;
 
-	/* No duplicate keys. */
-	if (unlikely(n->slot[index] == val))
-		return -1;
+	/*
+	 * Bail out if:
+	 * - position is wrong;
+	 * - no way to shift right(it is full);
+	 * - left becomes unbalanced.
+	 */
+	if (pos >= p->entries || is_node_full(r) || !is_node_gt_min(l))
+		return false;
 
-	if (index < n->entries)
-		ARRAY_MOVE(n->slot, index + 1, index,
-			n->entries);
+	if (is_node_internal(l)) {
+		array_insert(r->slot, 0, r->entries, p->slot[pos]);
+		array_insert(r->SUB_LINKS, 0, r->entries + 1,
+			(ulong) l->SUB_LINKS[l->entries]);
+	} else {
+		/*
+		 * TODO: leafs store only payload data. It does not keep
+		 * indexes. An index can be extracted from the payload
+		 * data in order to update parent.
+		 */
+		array_insert(r->slot, 0, r->entries, l->slot[l->entries - 1]);
+	}
 
-	n->slot[index] = val;
-	n->entries++;
-	return 0;
+	/* Update parent position with a new separator index. */
+	p->slot[pos] = l->slot[l->entries - 1];
+
+	l->entries--;
+	r->entries++;
+	return true;
+}
+
+static struct node *
+bp_merge_siblings(struct node *p, int pos)
+{
+	struct node *l = bp_get_left_child(p, pos);
+	struct node *r = bp_get_right_child(p, pos);
+
+	/* Adjust position. */
+	if (pos == p->entries)
+		pos--;
+
+	if (is_node_internal(l)) {
+		/* One extra for parent. */
+		BUG_ON(l->entries + r->entries + 1 > MAX_ENTRIES);
+
+		l->slot[l->entries] = p->slot[pos];
+		array_copy(l->slot + l->entries + 1, r->slot, r->entries);
+		array_copy(l->SUB_LINKS + l->entries + 1, r->SUB_LINKS, sub_entries(r));
+		l->entries += (r->entries + 1);
+	} else {
+		BUG_ON(l->entries + r->entries > MAX_ENTRIES);
+		array_copy(l->slot + l->entries, r->slot, r->entries);
+		list_del(&r->page.external.list);
+		l->entries += r->entries;
+	}
+
+	/* Fix the parent. */
+	array_move(p->slot, pos, pos + 1, p->entries);
+	array_move(p->SUB_LINKS, pos + 1, pos + 2, sub_entries(p));
+	p->entries--;
+	free(r);
+
+	return l;
 }
 
 /*
  * "left" is a node which is split.
  */
 static __always_inline void
-bp_split_internal_node(struct node *left, struct node *right)
+bp_split_internal_node(struct node *l, struct node *r)
 {
-	int i;
-
-	BUG_ON(!is_node_internal(left));
+	BUG_ON(!is_node_internal(l));
 
 	/*
 	 * Minus one entries is set because, during the split process
@@ -156,41 +232,38 @@ bp_split_internal_node(struct node *left, struct node *right)
 	 * A B C D   ->    3       7
 	 *                A B     C D
 	 */
-	right->entries = split(MAX_ENTRIES) - 1;
-	left->entries = (MAX_ENTRIES - (right->entries + 1));
+	r->entries = split(MAX_ENTRIES) - 1;
+	l->entries = (MAX_ENTRIES - (r->entries + 1));
 
 	/* Copy keys to the new node (right part). */
-	for (i = 0; i < right->entries; i++)
-		right->slot[i] = left->slot[left->entries + i + 1];
+	array_copy(r->slot, l->slot + l->entries + 1, r->entries);
 
 	/* Number of children in a node is node entries + 1. */
-	for (i = 0; i < right->entries + 1; i++)
-		NODE_SUB_LINK(right, i) = NODE_SUB_LINK(left, left->entries + i + 1);
+	array_copy(r->SUB_LINKS,
+		l->SUB_LINKS + sub_entries(l), sub_entries(r));
 }
 
 static __always_inline void
-bp_split_external_node(struct node *left, struct node *right)
+bp_split_external_node(struct node *l, struct node *r)
 {
-	int i;
-
-	BUG_ON(!is_node_external(left));
+	BUG_ON(!is_node_external(l));
 
 	/*
 	 * During the split process of external node, a separator
 	 * key is __copied__ to the parent. Example:
 	 *
 	 *  3 5 7              (5)
-	 * A B C D   ->    3       5 7
-	 *                A B     C   D
+	 * A B C D   ->    3        5 7
+	 *                A B      C   D
 	 */
-	right->entries = split(MAX_ENTRIES);
-	left->entries = MAX_ENTRIES - right->entries;
+	r->entries = split(MAX_ENTRIES);
+	l->entries = MAX_ENTRIES - r->entries;
 
-	/*
-	 * Copy keys to the new node (right part).
-	 */
-	for (i = 0; i < right->entries; i++)
-		right->slot[i] = left->slot[i + left->entries];
+	/* Copy keys to the new node (right part). */
+	array_copy(r->slot, l->slot + l->entries, r->entries);
+
+	/* Add a new entry to a double-linked list. */
+	list_add(&r->page.external.list, &l->page.external.list);
 }
 
 static __always_inline void
@@ -212,12 +285,11 @@ bp_split_node(struct node *n, struct node *parent, int pindex)
 	}
 
 	/* Move the new separator key to the parent node. */
-	ARRAY_INSERT(parent->slot, pindex,
-		parent->entries, split_key);
+	array_insert(parent->slot, pindex, parent->entries, split_key);
 
 	/* new right kid(n) goes in pindex + 1 */
-	ARRAY_INSERT(parent->page.internal.sub_links, pindex + 1,
-		parent->entries + 1, right);
+	array_insert(parent->page.internal.sub_links,
+		pindex + 1, parent->entries + 1, (ulong) right);
 
 	/* Set the parent for both kids */
 	right->info.parent = n->info.parent = parent;
@@ -240,38 +312,39 @@ bp_split_root_node(struct node *root)
 }
 
 static int
-bp_insert_non_full(struct node *n, ulong val)
+bp_insert_non_full(struct bp_root *root, ulong val)
 {
-	int index;
+	struct node *n = root->node;
+	int pos;
 
 	while (is_node_internal(n)) {
-		index = bp_search_node_index(n, val);
+		pos_cc_t pos_cc = bp_binary_search(n, val, &pos);
 
 		/* If same key, bail out. */
-		if (index < n->entries && n->slot[index] == val)
+		if (pos_cc == POS_CC_EQ)
 			return -1;
 
-		if (is_node_full(NODE_SUB_LINK(n, index))) {
+		if (is_node_full(n->SUB_LINKS[pos])) {
 			/*
 			 * After split operation, the parent node (n) gets
 			 * the separator key from the child node. The key
-			 * is inserted to "index" position of the parent.
+			 * is inserted into "pos" position of the parent.
 			 */
-			bp_split_node(NODE_SUB_LINK(n, index), n, index);
+			bp_split_node(n->SUB_LINKS[pos], n, pos);
 
-			if (val > n->slot[index])
-				index++;
+			if (val > n->slot[pos])
+				pos++;
 		}
 
-		n = NODE_SUB_LINK(n, index);
+		n = n->SUB_LINKS[pos];
 	}
 
-	index = bp_search_node_index(n, val);
-	return bp_insert_to_node(n, index, val);
+	/* It is guaranteed "n" is not full. */
+	(void) bp_binary_search(n, val, &pos);
+	return bp_insert_to_node(n, pos, val);
 }
 
-static int
-bp_insert(struct bp_root *root, ulong val)
+int bp_po_insert(struct bp_root *root, ulong val)
 {
 	struct node *n = root->node;
 
@@ -284,157 +357,106 @@ bp_insert(struct bp_root *root, ulong val)
 		root->node = n;
 	}
 
-	return bp_insert_non_full(root->node, val);
+	return bp_insert_non_full(root, val);
 }
 
-static bool
-bp_lookup(struct bp_root *root, ulong val)
+struct node *bp_lookup(struct bp_root *root, ulong val, int *pos)
 {
 	struct node *n = root->node;
+	pos_cc_t pos_cc;
 	int index;
 
 	while (is_node_internal(n)) {
-		index = bp_search_node_index(n, val);
+		pos_cc = bp_binary_search(n, val, &index);
 
 		/* If true, "val" is located in a right sub-tree. */
-		if (n->slot[index] == val)
+		if (pos_cc == POS_CC_EQ)
 			index++;
 
-		n = NODE_SUB_LINK(n, index);
+		n = n->SUB_LINKS[index];
 	}
 
-	index = bp_search_node_index(n, val);
-	return (n->slot[index] == val);
+	pos_cc = bp_binary_search(n, val, pos);
+	return pos_cc == POS_CC_EQ ? n : NULL;
 }
 
-int rand_comparison(const void *a, const void *b)
+/* Preemptive overflow delete operation. */
+bool bp_po_delete(struct bp_root *root, ulong val)
 {
-	(void)a; (void)b;
-	return rand() % 2 ? +1 : -1;
-}
+	struct node *n = root->node;
+	struct node *parent = NULL;
+	pos_cc_t pos_cc;
+	int pos;
 
-void shuffle(void *base, size_t nmemb, size_t size)
-{
-	srand(time(NULL));
-	qsort(base, nmemb, size, rand_comparison);
-}
+	while (1) {
+		pos_cc = bp_binary_search(n, val, &pos);
 
-static inline void
-time_now(struct timespec *t)
-{
-	(void) clock_gettime(CLOCK_MONOTONIC, t);
-}
+		/* Hit the bottom. */
+		if (is_node_external(n))
+			break;
 
-/*
- * returns differences in nanoseconds
- */
-static inline unsigned long
-time_diff(struct timespec *a, struct timespec *b)
-{
-	struct timespec res;
-	int nsec;
+		parent = n;
 
-	if (b->tv_nsec < a->tv_nsec) {
-		nsec = (a->tv_nsec - b->tv_nsec) / 1000000000 + 1;
-		a->tv_nsec -= 1000000000 * nsec;
-		a->tv_sec += nsec;
+		/*
+		 * If true, "val" is located in a right sub-tree.
+		 */
+		if (pos_cc == POS_CC_EQ)
+			n = n->SUB_LINKS[pos + 1];
+		else
+			n = n->SUB_LINKS[pos];
+
+		if (is_node_gt_min(n))
+			continue;
+
+		{
+			struct node *l = bp_get_left_child(parent, pos);
+			struct node *r = bp_get_right_child(parent, pos);
+			bool balanced;
+
+			if (l == n)
+				balanced = bp_try_shift_left(l, r, parent, pos);
+			else
+				balanced = bp_try_shift_right(l, r, parent, pos);
+
+			/* Need merging. */
+			if (!balanced) {
+				n = bp_merge_siblings(parent, pos);
+
+				/* Set a new parent. Can be a leaf node only. */
+				if (!parent->entries && parent == root->node) {
+					n->info.parent = NULL;
+					root->node = n;
+					free(parent);
+				}
+			}
+		}
 	}
 
-	res.tv_sec = b->tv_sec - a->tv_sec;
-	res.tv_nsec = b->tv_nsec - a->tv_nsec;
-	return (res.tv_sec * 1000000000) + res.tv_nsec;
-}
-
-static void
-test_random_insert(struct bp_root *root, unsigned int tree_size)
-{
-	struct timespec a, b;
-	unsigned long *array;
-	unsigned long max_nsec;
-	unsigned long d, diff;
-	int i, rv;
-
-	array = calloc(tree_size, sizeof(unsigned long));
-	BUG_ON(array == NULL);
-
-	for (i = 0; i < tree_size; i++)
-		array[i] = i;
-
-	shuffle(array, tree_size, sizeof(unsigned long));
-
-	for (i = 0, max_nsec = 0, d = 0; i < tree_size; i++) {
-		time_now(&a);
-		rv = bp_insert(root, array[i]);
-		time_now(&b);
-		
-		if (rv)
-			fprintf(stdout, "-> Failed to insert %lu key\n", array[i]);
-
-		diff = time_diff(&a, &b);
-		d += diff;
-
-		if (diff > max_nsec)
-			max_nsec = diff;
+	/* Success. */
+	if (pos_cc == POS_CC_EQ) {
+		bp_remove_from_node(n, pos, val);
+		return true;
 	}
 
-#if 0
-	/* average */
-	d = d / i;
-	fprintf(stdout, "insertion: %lu nano/s, %f micro/s, max: %lu nsec, tree high: %d\n",
-		d, (float) d / 1000, max_nsec, bp_tree_high(root->node));
-#endif
+	return false;
 }
 
-static void
-test_random_lookup(struct bp_root *root, unsigned int tree_size)
+int bp_root_init(struct bp_root *root)
 {
-	struct timespec a, b;
-	unsigned long *array;
-	unsigned long max_nsec;
-	unsigned long d, diff;
-	int i, rv;
+	root->node = bp_calloc_node_init(BP_TYPE_EXTER);
+	if (!root->node)
+		return -1;
 
-	array = calloc(tree_size, sizeof(unsigned long));
-	BUG_ON(array == NULL);
+	list_init(&root->head);
+	list_add(&root->node->page.external.list, &root->head);
 
-	for (i = 0; i < tree_size; i++)
-		array[i] = i;
-
-	shuffle(array, tree_size, sizeof(unsigned long));
-
-	for (i = 0, max_nsec = 0, d = 0; i < tree_size; i++) {
-		time_now(&a);
-		rv = bp_lookup(root, array[i]);
-		time_now(&b);
-
-		if (!rv)
-			fprintf(stdout, "-> Key is not found: %lu\n", array[i]);
-
-		diff = time_diff(&a, &b);
-		d += diff;
-
-		if (diff > max_nsec)
-			max_nsec = diff;
-	}
-
-#if 0
-	/* average */
-	d = d / i;
-	fprintf(stdout, "lookup: %lu nano/s, %f micro/s, max: %lu nsec, tree high: %d\n",
-		d, (float) d / 1000, max_nsec, bp_tree_high(root->node));
-#endif
+	return 0;
 }
 
-int main(int argc, char **argv)
+void bp_root_destroy(struct bp_root *root)
 {
-	struct bp_root root;
-	int rv;
-
-	rv = bp_init_tree(&root);
-	if (rv < 0)
-		assert(0);
-
-	test_random_insert(&root, 50);
-	test_random_lookup(&root, 50);
-	dump_tree(root.node);
+	/* list_del(&root->node->page.external.list); */
+	list_init(&root->head);
+	free(root->node);
+	root->node = NULL;
 }
