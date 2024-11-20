@@ -204,7 +204,7 @@ check_node_geometry(struct node *n)
 extern int bp_root_init(struct bp_root *);
 extern void bp_root_destroy(struct bp_root *);
 extern int bp_po_insert(struct bp_root *, ulong);
-extern bool bp_po_delete(struct bp_root *, ulong);
+extern int bp_po_delete(struct bp_root *, ulong);
 extern struct node *bp_lookup(struct bp_root *, ulong, int *);
 
 #endif

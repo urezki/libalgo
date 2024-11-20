@@ -381,7 +381,7 @@ struct node *bp_lookup(struct bp_root *root, ulong val, int *pos)
 }
 
 /* Preemptive overflow delete operation. */
-bool bp_po_delete(struct bp_root *root, ulong val)
+int bp_po_delete(struct bp_root *root, ulong val)
 {
 	struct node *n = root->node;
 	struct node *parent = NULL;
@@ -435,10 +435,10 @@ bool bp_po_delete(struct bp_root *root, ulong val)
 	/* Success. */
 	if (pos_cc == POS_CC_EQ) {
 		bp_remove_from_node(n, pos, val);
-		return true;
+		return 0;
 	}
 
-	return false;
+	return -1;
 }
 
 int bp_root_init(struct bp_root *root)
