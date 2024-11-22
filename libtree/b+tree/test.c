@@ -1,21 +1,50 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <assert.h>
 #include <time.h>
 
 #include "b+tree.h"
 #include "debug.h"
 
-int rand_comparison(const void *a, const void *b)
+static int
+ascending_order(const void *a, const void *b)
+{
+	return (*(int *)a - *(int *)b);
+}
+
+static int
+reverse_order(const void *a, const void *b)
+{
+	return (*(int *)b - *(int *)a);
+}
+
+static int
+random_order(const void *a, const void *b)
 {
 	(void)a; (void)b;
 	return rand() % 2 ? +1 : -1;
 }
 
-void shuffle(void *base, size_t nmemb, size_t size)
+static void
+shuffle(void *base, size_t nmemb, size_t size, int mask)
 {
 	srand(time(NULL));
-	qsort(base, nmemb, size, rand_comparison);
+
+	if (mask & 0x1) {
+		qsort(base, nmemb, size, ascending_order);
+	} else if (mask & 0x2) {
+		qsort(base, nmemb, size, reverse_order);
+	} else {
+		qsort(base, nmemb, size, random_order);
+	}
+}
+
+static unsigned long
+rand_mask(unsigned long mask_len)
+{
+	srand(time(NULL));
+	return (1UL << rand() % mask_len);
 }
 
 static inline void
@@ -45,23 +74,27 @@ time_diff(struct timespec *a, struct timespec *b)
 }
 
 static int
-test_random_insert(struct bp_root *root, unsigned long tree_size)
+test_insert(struct bp_root *root, unsigned long *array, unsigned long entries, int mask)
 {
+	char method[64] = {'\0'};
 	struct timespec a, b;
-	unsigned long *array;
 	unsigned long max_nsec;
 	unsigned long d, diff;
-	int i, rv;
+	int rv, i;
 
-	array = calloc(tree_size, sizeof(unsigned long));
-	BUG_ON(array == NULL);
+	if (!entries)
+		return -1;
 
-	for (i = 0; i < tree_size; i++)
-		array[i] = i;
+	shuffle(array, entries, sizeof(unsigned long), mask);
 
-	shuffle(array, tree_size, sizeof(unsigned long));
+	if (mask & 0x1)
+		strncpy(method, "ascending", sizeof(method));
+	else if (mask & 0x2)
+		strncpy(method, "reverse", sizeof(method));
+	else
+		strncpy(method, "random", sizeof(method));
 
-	for (i = 0, max_nsec = 0, d = 0; i < tree_size; i++) {
+	for (i = 0, max_nsec = 0, d = 0; i < entries; i++) {
 		time_now(&a);
 		rv = bp_po_insert(root, array[i]);
 		time_now(&b);
@@ -73,41 +106,45 @@ test_random_insert(struct bp_root *root, unsigned long tree_size)
 			max_nsec = diff;
 
 		/* Failed to insert. */
-		if (rv)
-			break;
+		if (rv) {
+			fprintf(stdout, "error to insert: %lu, already exists: %d\n",
+				array[i], bp_lookup(root, array[i], NULL) ? 1:0);
+			return -1;
+		}
 	}
-
-	free(array);
 
 #if 1
 	/* average */
 	d = d / i;
-	fprintf(stdout, "insert: %lu nano/s, %f micro/s, max: %lu nsec, tree high: %d\n",
-		d, (float) d / 1000, max_nsec, bp_tree_high(root->node));
+	fprintf(stdout, "insert(%s): %lu nano/s, %f micro/s, max: %lu nsec, tree high: %d\n",
+		method, d, (float) d / 1000, max_nsec, bp_tree_high(root->node));
 #endif
-	return rv;
+	return 0;
 }
 
 static int
-test_random_lookup(struct bp_root *root, unsigned long tree_size)
+test_lookup(struct bp_root *root, unsigned long *array, unsigned long entries, int mask)
 {
+	char method[64] = {'\0'};
 	struct timespec a, b;
-	unsigned long *array;
 	unsigned long max_nsec;
 	unsigned long d, diff;
 	struct node *n;
-	int rv = 0;
 	int i;
 
-	array = calloc(tree_size, sizeof(unsigned long));
-	BUG_ON(array == NULL);
+	if (!entries)
+		return -1;
 
-	for (i = 0; i < tree_size; i++)
-		array[i] = i;
+	shuffle(array, entries, sizeof(unsigned long), mask);
 
-	shuffle(array, tree_size, sizeof(unsigned long));
+	if (mask & 0x1)
+		strncpy(method, "ascending", sizeof(method));
+	else if (mask & 0x2)
+		strncpy(method, "reverse", sizeof(method));
+	else
+		strncpy(method, "random", sizeof(method));
 
-	for (i = 0, max_nsec = 0, d = 0; i < tree_size; i++) {
+	for (i = 0, max_nsec = 0, d = 0; i < entries; i++) {
 		time_now(&a);
 		n = bp_lookup(root, array[i], NULL);
 		time_now(&b);
@@ -120,40 +157,42 @@ test_random_lookup(struct bp_root *root, unsigned long tree_size)
 
 		/* Failed. */
 		if (!n) {
-			rv = -1;
-			break;
+			fprintf(stdout, "error to lookup: %lu\n", array[i]);
+			return -1;
 		}
 	}
-
-	free(array);
 
 #if 1
 	/* average */
 	d = d / i;
-	fprintf(stdout, "lookup: %lu nano/s, %f micro/s, max: %lu nsec, tree high: %d\n",
-		d, (float) d / 1000, max_nsec, bp_tree_high(root->node));
+	fprintf(stdout, "lookup(%s): %lu nano/s, %f micro/s, max: %lu nsec, tree high: %d\n",
+		method, d, (float) d / 1000, max_nsec, bp_tree_high(root->node));
 #endif
-	return rv;
+	return 0;
 }
 
 static int
-test_random_delete(struct bp_root *root, unsigned long tree_size)
+test_delete(struct bp_root *root, unsigned long *array, unsigned long entries, int mask)
 {
+	char method[64] = {'\0'};
 	struct timespec a, b;
-	unsigned long *array;
 	unsigned long max_nsec;
 	unsigned long d, diff;
 	int i, rv;
 
-	array = calloc(tree_size, sizeof(unsigned long));
-	BUG_ON(array == NULL);
+	if (!entries)
+		return 0;
 
-	for (i = 0; i < tree_size; i++)
-		array[i] = i;
+	shuffle(array, entries, sizeof(unsigned long), mask);
 
-	shuffle(array, tree_size, sizeof(unsigned long));
+	if (mask & 0x1)
+		strncpy(method, "ascending", sizeof(method));
+	else if (mask & 0x2)
+		strncpy(method, "reverse", sizeof(method));
+	else
+		strncpy(method, "random", sizeof(method));
 
-	for (i = 0, max_nsec = 0, d = 0; i < tree_size; i++) {
+	for (i = 0, max_nsec = 0, d = 0; i < entries; i++) {
 		time_now(&a);
 		rv = bp_po_delete(root, array[i]);
 		time_now(&b);
@@ -165,42 +204,71 @@ test_random_delete(struct bp_root *root, unsigned long tree_size)
 			max_nsec = diff;
 
 		/* Failed. */
-		if (rv)
-			break;
+		if (rv) {
+			fprintf(stdout, "error to delete: %lu\n", array[i]);
+			return -1;
+		}
 	}
-
-	free(array);
 
 #if 1
 	/* average */
 	d = d / i;
-	fprintf(stdout, "delete: %lu nano/s, %f micro/s, max: %lu nsec, tree high: %d\n",
-		d, (float) d / 1000, max_nsec, bp_tree_high(root->node));
+	fprintf(stdout, "delete(%s): %lu nano/s, %f micro/s, max: %lu nsec, tree high: %d\n",
+		method, d, (float) d / 1000, max_nsec, bp_tree_high(root->node));
 #endif
-	return rv;
+	return 0;
 }
 
 static void
 do_sanity_check(void)
 {
 	struct bp_root root;
-	unsigned long tree_size;
-	int rv;
+	unsigned long *array;
+	unsigned long max_entries;
+	int rv, i;
 
 	rv = bp_root_init(&root);
 	if (rv < 0)
 		assert(0);
 
+	max_entries = 100000;
+
+	array = calloc(max_entries, sizeof(unsigned long));
+	BUG_ON(array == NULL);
+
+	for (i = 0; i < max_entries; i++)
+		array[i] = i;
+
 	while (1) {
-		srand(time(NULL));
-		tree_size = rand() % 1000000;
-		fprintf(stdout, "-> Run sanity on %lu tree size...\n", tree_size);
+		unsigned long rnd_entries = rand() % max_entries + 1;
+		unsigned long val = array[rand() % rnd_entries];
 
-		rv |= test_random_insert(&root, tree_size);
-		rv |= test_random_lookup(&root, tree_size);
-		rv |= test_random_delete(&root, tree_size);
+		fprintf(stdout, "-> Start exercise tree on %lu size...\n", rnd_entries);
 
-		if (rv)
+		if (test_insert(&root, array, rnd_entries, rand_mask(3)))
+			BUG();
+
+		if (bp_po_delete(&root, val))
+			BUG();
+
+		if (bp_po_insert(&root, val))
+			BUG();
+
+		if (test_lookup(&root, array, rnd_entries, rand_mask(3)))
+			BUG();
+
+		if (val & 0x1) {
+			if (test_delete(&root, array, rnd_entries, rand_mask(3)))
+				BUG();
+
+			if (test_insert(&root, array, rnd_entries, rand_mask(3)))
+				BUG();
+		} else {
+			if (test_lookup(&root, array, rnd_entries, rand_mask(3)))
+				BUG();
+		}
+
+		if (test_delete(&root, array, rnd_entries, rand_mask(3)))
 			BUG();
 	}
 

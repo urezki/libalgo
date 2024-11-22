@@ -69,9 +69,8 @@ bp_insert_to_node(struct node *n, int pos, ulong val)
 {
 	BUG_ON(pos >= MAX_ENTRIES);
 
-	/* First position can be garbage(if empty node). */
-	if (n->entries)
-		/* No duplicate keys. */
+	/* Check __alive__ entries for duplicates. */
+	if (pos < n->entries)
 		if (unlikely(n->slot[pos] == val))
 			return -1;
 
@@ -315,28 +314,35 @@ static int
 bp_insert_non_full(struct bp_root *root, ulong val)
 {
 	struct node *n = root->node;
+	struct node *p;
+	pos_cc_t pos_cc;
 	int pos;
 
 	while (is_node_internal(n)) {
-		pos_cc_t pos_cc = bp_binary_search(n, val, &pos);
+		pos_cc = bp_binary_search(n, val, &pos);
+		p = n;
 
-		/* If same key, bail out. */
 		if (pos_cc == POS_CC_EQ)
-			return -1;
+			/* follow right direction. */
+			n = n->SUB_LINKS[pos + 1];
+		else
+			/* follow left direction. */
+			n = n->SUB_LINKS[pos];
 
-		if (is_node_full(n->SUB_LINKS[pos])) {
+		if (is_node_full(n)) {
 			/*
-			 * After split operation, the parent node (n) gets
-			 * the separator key from the child node. The key
-			 * is inserted into "pos" position of the parent.
+			 * After split operation, the parent node(p) gets
+			 * the separator key from the child node(n). The key
+			 * is inserted into "pos" position of the parent(p).
 			 */
-			bp_split_node(n->SUB_LINKS[pos], n, pos);
+			if (pos_cc == POS_CC_EQ)
+				bp_split_node(n, p, pos + 1);
+			else
+				bp_split_node(n, p, pos);
 
-			if (val > n->slot[pos])
-				pos++;
+			if (val >= p->slot[pos])
+				n = p->SUB_LINKS[pos + 1];
 		}
-
-		n = n->SUB_LINKS[pos];
 	}
 
 	/* It is guaranteed "n" is not full. */
