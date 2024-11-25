@@ -177,16 +177,16 @@ bp_get_right_child(struct node *parent, int pos)
 		parent->SUB_LINKS[pos + 1]:parent->SUB_LINKS[pos];
 }
 
-static inline int bp_tree_high(struct node *n)
+static inline int bp_high(struct node *n)
 {
-	int depth = 1;
+	int h = 0;
 
 	while (is_node_internal(n)) {
 		n = n->SUB_LINKS[0];
-		depth++;
+		h++;
 	}
 
-	return depth;
+	return h;
 }
 
 static inline void

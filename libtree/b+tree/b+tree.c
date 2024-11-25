@@ -340,6 +340,12 @@ bp_insert_non_full(struct bp_root *root, ulong val)
 			else
 				bp_split_node(n, p, pos);
 
+			/*
+			 * Please note, after split and updating the parent(p)
+			 * with a new separator index, we might need to follow
+			 * to the right direction. Check position and adjust a
+			 * route.
+			 */
 			if (val >= p->slot[pos])
 				n = p->SUB_LINKS[pos + 1];
 		}
@@ -366,23 +372,34 @@ int bp_po_insert(struct bp_root *root, ulong val)
 	return bp_insert_non_full(root, val);
 }
 
-struct node *bp_lookup(struct bp_root *root, ulong val, int *pos)
+static inline struct node *
+bp_find_leaf(struct bp_root *root, ulong val)
 {
 	struct node *n = root->node;
 	pos_cc_t pos_cc;
-	int index;
+	int pos;
 
 	while (is_node_internal(n)) {
-		pos_cc = bp_binary_search(n, val, &index);
+		pos_cc = bp_binary_search(n, val, &pos);
 
 		/* If true, "val" is located in a right sub-tree. */
 		if (pos_cc == POS_CC_EQ)
-			index++;
+			pos++;
 
-		n = n->SUB_LINKS[index];
+		n = n->SUB_LINKS[pos];
 	}
 
+	return n;
+}
+
+struct node *bp_lookup(struct bp_root *root, ulong val, int *pos)
+{
+	struct node *n;
+	pos_cc_t pos_cc;
+
+	n = bp_find_leaf(root, val);
 	pos_cc = bp_binary_search(n, val, pos);
+
 	return pos_cc == POS_CC_EQ ? n : NULL;
 }
 

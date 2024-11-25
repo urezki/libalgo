@@ -117,7 +117,7 @@ test_insert(struct bp_root *root, unsigned long *array, unsigned long entries, i
 	/* average */
 	d = d / i;
 	fprintf(stdout, "insert(%s): %lu nano/s, %f micro/s, max: %lu nsec, tree high: %d\n",
-		method, d, (float) d / 1000, max_nsec, bp_tree_high(root->node));
+		method, d, (float) d / 1000, max_nsec, bp_high(root->node));
 #endif
 	return 0;
 }
@@ -166,7 +166,7 @@ test_lookup(struct bp_root *root, unsigned long *array, unsigned long entries, i
 	/* average */
 	d = d / i;
 	fprintf(stdout, "lookup(%s): %lu nano/s, %f micro/s, max: %lu nsec, tree high: %d\n",
-		method, d, (float) d / 1000, max_nsec, bp_tree_high(root->node));
+		method, d, (float) d / 1000, max_nsec, bp_high(root->node));
 #endif
 	return 0;
 }
@@ -214,7 +214,7 @@ test_delete(struct bp_root *root, unsigned long *array, unsigned long entries, i
 	/* average */
 	d = d / i;
 	fprintf(stdout, "delete(%s): %lu nano/s, %f micro/s, max: %lu nsec, tree high: %d\n",
-		method, d, (float) d / 1000, max_nsec, bp_tree_high(root->node));
+		method, d, (float) d / 1000, max_nsec, bp_high(root->node));
 #endif
 	return 0;
 }
