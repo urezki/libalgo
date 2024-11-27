@@ -13,7 +13,7 @@ build_graph(struct node *n)
 	if (is_node_external(n)) {
 		printf("\tnode%lu[label = \"", n->num);
 		for (i = 0; i < n->entries; i++)
-			printf("%lu ", n->slot[i]);
+			printf("%lu ", get_slot_key(n, i));
 
 		printf("\"];\n");
 		return;
@@ -21,7 +21,7 @@ build_graph(struct node *n)
 
 	printf("\tnode%lu[label = \"<p0>", n->num);
 	for (i = 0; i < n->entries; i++)
-		printf(" |%lu| <p%d>", (unsigned long) n->slot[i], i + 1);
+		printf(" |%lu| <p%d>", (unsigned long) get_slot_key(n, i), i + 1);
 
 	printf("\"];\n");
 

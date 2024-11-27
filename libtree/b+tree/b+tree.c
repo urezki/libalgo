@@ -46,11 +46,11 @@ bp_binary_search(struct node *n, ulong key, int *pos)
 	/* invariant: a[lo] < key <= a[hi] */
 	while (l + 1 < r) {
 		int m = (l + r) >> 1;
-		(n->slot[m] < key) ? (l = m):(r = m);
+		(get_slot_key(n, m) < key) ? (l = m):(r = m);
 	}
 
 	if (r < n->entries) {
-		if (n->slot[r] == key)
+		if (get_slot_key(n, r) == key)
 			pos_cc = POS_CC_EQ;
 		else
 			pos_cc = POS_CC_LT;
@@ -58,39 +58,40 @@ bp_binary_search(struct node *n, ulong key, int *pos)
 		pos_cc = POS_CC_GT;
 	}
 
-	if (pos)
-		*pos = r;
-
+	*pos = r;
 	return pos_cc;
 }
 
 static __always_inline int
-bp_insert_to_node(struct node *n, int pos, ulong val)
+bp_insert_to_leaf(struct node *n, int pos, record *r)
 {
 	BUG_ON(pos >= MAX_ENTRIES);
 
 	/* Check __alive__ entries for duplicates. */
 	if (pos < n->entries)
-		if (unlikely(n->slot[pos] == val))
+		if (unlikely(get_slot_key(n, pos) == r->val))
 			return -1;
 
-	array_insert(n->slot, pos, n->entries, val);
+	array_insert(n->slot, pos, n->entries, (ulong) r);
 	n->entries++;
 	return 0;
 }
 
-static __always_inline int
-bp_remove_from_node(struct node *n, int pos, ulong val)
+static __always_inline
+record *bp_remove_from_leaf(struct node *n, int pos, ulong val)
 {
+	record *r;
+
 	BUG_ON(pos >= MAX_ENTRIES);
 
 	/* Wrong position or value? */
-	if (unlikely(n->slot[pos] != val))
-		return -1;
+	if (unlikely(get_slot_key(n, pos) != val))
+		return NULL;
 
+	r = (record *) n->slot[pos];
 	array_remove(n->slot, pos, n->entries);
 	n->entries--;
-	return 0;
+	return r;
 }
 
 /*
@@ -117,15 +118,10 @@ bp_try_shift_left(struct node *l, struct node *r, struct node *p, int pos)
 		p->slot[pos] = r->slot[0];
 
 		l->SUB_LINKS[l->entries + 1] = r->SUB_LINKS[0];
-		array_move(r->SUB_LINKS, 0, 1, sub_entries(r));
+		array_move(r->SUB_LINKS, 0, 1, nr_sub_entries(r));
 	} else {
-		/*
-		 * TODO: leafs store only payload data. It does not keep
-		 * indexes. An index can be extracted from the payload
-		 * data in order to update parent.
-		 */
 		l->slot[l->entries] = r->slot[0];
-		p->slot[pos] = r->slot[1];
+		p->slot[pos] = get_slot_key(r, 1);
 	}
 
 	/* Remove the element from right node. */
@@ -160,19 +156,14 @@ bp_try_shift_right(struct node *l, struct node *r, struct node *p, int pos)
 
 	if (is_node_internal(l)) {
 		array_insert(r->slot, 0, r->entries, p->slot[pos]);
-		array_insert(r->SUB_LINKS, 0, r->entries + 1,
+		array_insert(r->SUB_LINKS, 0, nr_sub_entries(r),
 			(ulong) l->SUB_LINKS[l->entries]);
 	} else {
-		/*
-		 * TODO: leafs store only payload data. It does not keep
-		 * indexes. An index can be extracted from the payload
-		 * data in order to update parent.
-		 */
 		array_insert(r->slot, 0, r->entries, l->slot[l->entries - 1]);
 	}
 
 	/* Update parent position with a new separator index. */
-	p->slot[pos] = l->slot[l->entries - 1];
+	p->slot[pos] = get_slot_key(l, l->entries - 1);
 
 	l->entries--;
 	r->entries++;
@@ -195,7 +186,7 @@ bp_merge_siblings(struct node *p, int pos)
 
 		l->slot[l->entries] = p->slot[pos];
 		array_copy(l->slot + l->entries + 1, r->slot, r->entries);
-		array_copy(l->SUB_LINKS + l->entries + 1, r->SUB_LINKS, sub_entries(r));
+		array_copy(l->SUB_LINKS + l->entries + 1, r->SUB_LINKS, nr_sub_entries(r));
 		l->entries += (r->entries + 1);
 	} else {
 		BUG_ON(l->entries + r->entries > MAX_ENTRIES);
@@ -206,7 +197,7 @@ bp_merge_siblings(struct node *p, int pos)
 
 	/* Fix the parent. */
 	array_move(p->slot, pos, pos + 1, p->entries);
-	array_move(p->SUB_LINKS, pos + 1, pos + 2, sub_entries(p));
+	array_move(p->SUB_LINKS, pos + 1, pos + 2, nr_sub_entries(p));
 	p->entries--;
 	free(r);
 
@@ -239,7 +230,7 @@ bp_split_internal_node(struct node *l, struct node *r)
 
 	/* Number of children in a node is node entries + 1. */
 	array_copy(r->SUB_LINKS,
-		l->SUB_LINKS + sub_entries(l), sub_entries(r));
+		l->SUB_LINKS + nr_sub_entries(l), nr_sub_entries(r));
 }
 
 static __always_inline void
@@ -277,18 +268,18 @@ bp_split_node(struct node *n, struct node *parent, int pindex)
 
 	if (is_node_internal(n)) {
 		bp_split_internal_node(n, right);
-		split_key = n->slot[n->entries]; /* will be moved. */
+		split_key = get_slot_key(n, n->entries); /* will be moved. */
 	} else {
 		bp_split_external_node(n, right);
-		split_key = right->slot[0];	/* is a __copy__. */
+		split_key = get_slot_key(right, 0); /* is a __copy__. */
 	}
 
 	/* Move the new separator key to the parent node. */
 	array_insert(parent->slot, pindex, parent->entries, split_key);
 
 	/* new right kid(n) goes in pindex + 1 */
-	array_insert(parent->page.internal.sub_links,
-		pindex + 1, parent->entries + 1, (ulong) right);
+	array_insert(parent->SUB_LINKS, pindex + 1,
+		nr_sub_entries(parent), (ulong) right);
 
 	/* Set the parent for both kids */
 	right->info.parent = n->info.parent = parent;
@@ -311,7 +302,7 @@ bp_split_root_node(struct node *root)
 }
 
 static int
-bp_insert_non_full(struct bp_root *root, ulong val)
+bp_insert_non_full(struct bp_root *root, record *r)
 {
 	struct node *n = root->node;
 	struct node *p;
@@ -319,7 +310,7 @@ bp_insert_non_full(struct bp_root *root, ulong val)
 	int pos;
 
 	while (is_node_internal(n)) {
-		pos_cc = bp_binary_search(n, val, &pos);
+		pos_cc = bp_binary_search(n, r->val, &pos);
 		p = n;
 
 		if (pos_cc == POS_CC_EQ)
@@ -346,17 +337,17 @@ bp_insert_non_full(struct bp_root *root, ulong val)
 			 * to the right direction. Check position and adjust a
 			 * route.
 			 */
-			if (val >= p->slot[pos])
+			if (r->val >= p->slot[pos])
 				n = p->SUB_LINKS[pos + 1];
 		}
 	}
 
 	/* It is guaranteed "n" is not full. */
-	(void) bp_binary_search(n, val, &pos);
-	return bp_insert_to_node(n, pos, val);
+	(void) bp_binary_search(n, r->val, &pos);
+	return bp_insert_to_leaf(n, pos, r);
 }
 
-int bp_po_insert(struct bp_root *root, ulong val)
+int bp_po_insert(struct bp_root *root, record *r)
 {
 	struct node *n = root->node;
 
@@ -369,7 +360,7 @@ int bp_po_insert(struct bp_root *root, ulong val)
 		root->node = n;
 	}
 
-	return bp_insert_non_full(root, val);
+	return bp_insert_non_full(root, r);
 }
 
 static inline struct node *
@@ -392,19 +383,23 @@ bp_find_leaf(struct bp_root *root, ulong val)
 	return n;
 }
 
-struct node *bp_lookup(struct bp_root *root, ulong val, int *pos)
+struct record *bp_lookup(struct bp_root *root, ulong val, int *out_pos)
 {
 	struct node *n;
 	pos_cc_t pos_cc;
+	int pos;
 
 	n = bp_find_leaf(root, val);
-	pos_cc = bp_binary_search(n, val, pos);
+	pos_cc = bp_binary_search(n, val, &pos);
 
-	return pos_cc == POS_CC_EQ ? n : NULL;
+	if (out_pos)
+		*out_pos = pos;
+
+	return pos_cc == POS_CC_EQ ? (record *) n->slot[pos] : NULL;
 }
 
 /* Preemptive overflow delete operation. */
-int bp_po_delete(struct bp_root *root, ulong val)
+struct record *bp_po_delete(struct bp_root *root, ulong val)
 {
 	struct node *n = root->node;
 	struct node *parent = NULL;
@@ -421,7 +416,7 @@ int bp_po_delete(struct bp_root *root, ulong val)
 		parent = n;
 
 		/*
-		 * If true, "val" is located in a right sub-tree.
+		 * If true, "r->val" is located in a right sub-tree.
 		 */
 		if (pos_cc == POS_CC_EQ)
 			n = n->SUB_LINKS[pos + 1];
@@ -456,12 +451,10 @@ int bp_po_delete(struct bp_root *root, ulong val)
 	}
 
 	/* Success. */
-	if (pos_cc == POS_CC_EQ) {
-		bp_remove_from_node(n, pos, val);
-		return 0;
-	}
+	if (pos_cc == POS_CC_EQ)
+		return bp_remove_from_leaf(n, pos, val);
 
-	return -1;
+	return NULL;
 }
 
 int bp_root_init(struct bp_root *root)

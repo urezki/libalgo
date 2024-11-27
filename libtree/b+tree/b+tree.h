@@ -83,6 +83,11 @@ struct bp_root {
 	struct list_head head;
 };
 
+/* Payload data. */
+typedef struct record {
+	unsigned long val;
+} record;
+
 /*
  * Halve an index with adjustment for odd numbers.
  */
@@ -91,35 +96,52 @@ static inline int split(int x)
 	return (x >> 1) + (x & 1);
 }
 
-static inline bool
+static __always_inline bool
 is_node_internal(struct node *n)
 {
 	return n->info.type == BP_TYPE_INTER;
 }
 
-static inline bool
+static __always_inline bool
 is_node_external(struct node *n)
 {
 	return n->info.type == BP_TYPE_EXTER;
 }
 
-static inline bool
+static __always_inline bool
 is_node_full(struct node *n)
 {
 	return (n->entries == MAX_ENTRIES);
 }
 
-static inline int
+static __always_inline int
 node_min_entries(struct node *n)
 {
 	return is_node_internal(n) ?
 		MIN_ENTRIES_INTER:MIN_ENTRIES_EXTER;
 }
 
-static inline int
-sub_entries(struct node *n)
+static __always_inline int
+nr_sub_entries(struct node *n)
 {
 	return n->entries + 1;
+}
+
+/*
+ * Leafs do not store an extra array for keys, instead a
+ * separator value is kept within a payload data(record).
+ *
+ * Therefore there is a helper, in order to extract a key
+ * from a node, i.e. for a leaf a record contains the key.
+ */
+static __always_inline ulong
+get_slot_key(struct node *n, int pos)
+{
+	if (is_node_external(n))
+		return ((record *) n->slot[pos])->val;
+
+	/* It is internal. */
+	return n->slot[pos];
 }
 
 /*
@@ -203,8 +225,8 @@ check_node_geometry(struct node *n)
 
 extern int bp_root_init(struct bp_root *);
 extern void bp_root_destroy(struct bp_root *);
-extern int bp_po_insert(struct bp_root *, ulong);
-extern int bp_po_delete(struct bp_root *, ulong);
-extern struct node *bp_lookup(struct bp_root *, ulong, int *);
+extern int bp_po_insert(struct bp_root *, record *);
+extern record *bp_po_delete(struct bp_root *, ulong);
+extern record *bp_lookup(struct bp_root *, ulong, int *);
 
 #endif

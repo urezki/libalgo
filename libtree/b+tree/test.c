@@ -74,7 +74,7 @@ time_diff(struct timespec *a, struct timespec *b)
 }
 
 static int
-test_insert(struct bp_root *root, unsigned long *array, unsigned long entries, int mask)
+test_insert(struct bp_root *root, record *records, ulong *keys, ulong entries, int mask)
 {
 	char method[64] = {'\0'};
 	struct timespec a, b;
@@ -83,9 +83,12 @@ test_insert(struct bp_root *root, unsigned long *array, unsigned long entries, i
 	int rv, i;
 
 	if (!entries)
-		return -1;
+		return 0;
 
-	shuffle(array, entries, sizeof(unsigned long), mask);
+	shuffle(keys, entries, sizeof(ulong), mask);
+
+	for (i = 0; i < entries; i++)
+		records[i].val = keys[i];
 
 	if (mask & 0x1)
 		strncpy(method, "ascending", sizeof(method));
@@ -96,7 +99,7 @@ test_insert(struct bp_root *root, unsigned long *array, unsigned long entries, i
 
 	for (i = 0, max_nsec = 0, d = 0; i < entries; i++) {
 		time_now(&a);
-		rv = bp_po_insert(root, array[i]);
+		rv = bp_po_insert(root, &records[i]);
 		time_now(&b);
 
 		diff = time_diff(&a, &b);
@@ -108,7 +111,7 @@ test_insert(struct bp_root *root, unsigned long *array, unsigned long entries, i
 		/* Failed to insert. */
 		if (rv) {
 			fprintf(stdout, "error to insert: %lu, already exists: %d\n",
-				array[i], bp_lookup(root, array[i], NULL) ? 1:0);
+				records[i].val, bp_lookup(root, records[i].val, NULL) ? 1:0);
 			return -1;
 		}
 	}
@@ -123,19 +126,19 @@ test_insert(struct bp_root *root, unsigned long *array, unsigned long entries, i
 }
 
 static int
-test_lookup(struct bp_root *root, unsigned long *array, unsigned long entries, int mask)
+test_lookup(struct bp_root *root, ulong *keys, ulong entries, int mask)
 {
 	char method[64] = {'\0'};
 	struct timespec a, b;
 	unsigned long max_nsec;
 	unsigned long d, diff;
-	struct node *n;
+	struct record *r;
 	int i;
 
 	if (!entries)
-		return -1;
+		return 0;
 
-	shuffle(array, entries, sizeof(unsigned long), mask);
+	shuffle(keys, entries, sizeof(ulong), mask);
 
 	if (mask & 0x1)
 		strncpy(method, "ascending", sizeof(method));
@@ -146,7 +149,7 @@ test_lookup(struct bp_root *root, unsigned long *array, unsigned long entries, i
 
 	for (i = 0, max_nsec = 0, d = 0; i < entries; i++) {
 		time_now(&a);
-		n = bp_lookup(root, array[i], NULL);
+		r = bp_lookup(root, keys[i], NULL);
 		time_now(&b);
 
 		diff = time_diff(&a, &b);
@@ -156,8 +159,8 @@ test_lookup(struct bp_root *root, unsigned long *array, unsigned long entries, i
 			max_nsec = diff;
 
 		/* Failed. */
-		if (!n) {
-			fprintf(stdout, "error to lookup: %lu\n", array[i]);
+		if (!r) {
+			fprintf(stdout, "error to lookup: %lu\n", keys[i]);
 			return -1;
 		}
 	}
@@ -172,18 +175,19 @@ test_lookup(struct bp_root *root, unsigned long *array, unsigned long entries, i
 }
 
 static int
-test_delete(struct bp_root *root, unsigned long *array, unsigned long entries, int mask)
+test_delete(struct bp_root *root, ulong *array, ulong entries, int mask)
 {
 	char method[64] = {'\0'};
 	struct timespec a, b;
+	struct record *r;
 	unsigned long max_nsec;
 	unsigned long d, diff;
-	int i, rv;
+	int i;
 
 	if (!entries)
 		return 0;
 
-	shuffle(array, entries, sizeof(unsigned long), mask);
+	shuffle(array, entries, sizeof(ulong), mask);
 
 	if (mask & 0x1)
 		strncpy(method, "ascending", sizeof(method));
@@ -194,7 +198,7 @@ test_delete(struct bp_root *root, unsigned long *array, unsigned long entries, i
 
 	for (i = 0, max_nsec = 0, d = 0; i < entries; i++) {
 		time_now(&a);
-		rv = bp_po_delete(root, array[i]);
+		r = bp_po_delete(root, array[i]);
 		time_now(&b);
 
 		diff = time_diff(&a, &b);
@@ -204,7 +208,7 @@ test_delete(struct bp_root *root, unsigned long *array, unsigned long entries, i
 			max_nsec = diff;
 
 		/* Failed. */
-		if (rv) {
+		if (!r) {
 			fprintf(stdout, "error to delete: %lu\n", array[i]);
 			return -1;
 		}
@@ -223,7 +227,8 @@ static void
 do_sanity_check(void)
 {
 	struct bp_root root;
-	unsigned long *array;
+	struct record *records;
+	ulong *keys;
 	unsigned long max_entries;
 	int rv, i;
 
@@ -233,42 +238,43 @@ do_sanity_check(void)
 
 	max_entries = 100000;
 
-	array = calloc(max_entries, sizeof(unsigned long));
-	BUG_ON(array == NULL);
+	records = calloc(max_entries, sizeof(struct record));
+	keys = calloc(max_entries, sizeof(unsigned long));
+	BUG_ON(records == NULL || keys == NULL);
 
+	/* Initialize. */
 	for (i = 0; i < max_entries; i++)
-		array[i] = i;
+		keys[i] = i;
 
 	while (1) {
-		unsigned long rnd_entries = rand() % max_entries + 1;
-		unsigned long val = array[rand() % rnd_entries];
+		unsigned long rnd_entries = rand() % max_entries;
+		ulong val = keys[rand() % rnd_entries];
+		struct record *r;
 
 		fprintf(stdout, "-> Start exercise tree on %lu size...\n", rnd_entries);
 
-		if (test_insert(&root, array, rnd_entries, rand_mask(3)))
+		if (test_insert(&root, records, keys, rnd_entries, rand_mask(3)))
 			BUG();
 
-		if (bp_po_delete(&root, val))
+		r = bp_po_delete(&root, val);
+		if (!r)
 			BUG();
 
-		if (bp_po_insert(&root, val))
-			BUG();
-
-		if (test_lookup(&root, array, rnd_entries, rand_mask(3)))
+		if (bp_po_insert(&root, r))
 			BUG();
 
 		if (val & 0x1) {
-			if (test_delete(&root, array, rnd_entries, rand_mask(3)))
+			if (test_delete(&root, keys, rnd_entries, rand_mask(3)))
 				BUG();
 
-			if (test_insert(&root, array, rnd_entries, rand_mask(3)))
+			if (test_insert(&root, records, keys, rnd_entries, rand_mask(3)))
 				BUG();
 		} else {
-			if (test_lookup(&root, array, rnd_entries, rand_mask(3)))
+			if (test_lookup(&root, keys, rnd_entries, rand_mask(3)))
 				BUG();
 		}
 
-		if (test_delete(&root, array, rnd_entries, rand_mask(3)))
+		if (test_delete(&root, keys, rnd_entries, rand_mask(3)))
 			BUG();
 	}
 
