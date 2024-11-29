@@ -6,14 +6,14 @@
 
 #ifdef DEBUG_BP_TREE
 static void
-build_graph(struct node *n)
+build_graph(struct bpn *n)
 {
 	int i;
 
-	if (is_node_external(n)) {
+	if (is_bpn_external(n)) {
 		printf("\tnode%lu[label = \"", n->num);
 		for (i = 0; i < n->entries; i++)
-			printf("%lu ", get_slot_key(n, i));
+			printf("%lu ", get_bpn_key(n, i));
 
 		printf("\"];\n");
 		return;
@@ -21,24 +21,24 @@ build_graph(struct node *n)
 
 	printf("\tnode%lu[label = \"<p0>", n->num);
 	for (i = 0; i < n->entries; i++)
-		printf(" |%lu| <p%d>", (unsigned long) get_slot_key(n, i), i + 1);
+		printf(" |%lu| <p%d>", (unsigned long) get_bpn_key(n, i), i + 1);
 
 	printf("\"];\n");
 
 	for (i = 0; i <= n->entries; i++)
 		printf("\t\"node%lu\":p%d -> \"node%lu\"\n",
-			n->num, i, n->page.internal.sub_links[i]->num);
+			n->num, i, n->SUB_LINKS[i]->num);
 
 	for (i = 0; i <= n->entries; i++)
-		build_graph(n->page.internal.sub_links[i]);
+		build_graph(n->SUB_LINKS[i]);
 }
 
 static void
-assign_node_id(struct node *n, int *num)
+assign_node_id(struct bpn *n, int *num)
 {
 	int i;
 
-	if (is_node_external(n)) {
+	if (is_bpn_external(n)) {
 		n->num = *num;
 		return;
 	}
@@ -46,11 +46,11 @@ assign_node_id(struct node *n, int *num)
 	n->num = *num;
 	for (i = 0; i <= n->entries; i++) {
 		(*num)++;
-		assign_node_id(n->page.internal.sub_links[i], num);
+		assign_node_id(n->SUB_LINKS[i], num);
 	}
 }
 
-void dump_tree(struct node *root)
+void dump_tree(struct bpn *root)
 {
 	int num = 0;
 

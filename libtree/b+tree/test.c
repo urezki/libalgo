@@ -74,7 +74,7 @@ time_diff(struct timespec *a, struct timespec *b)
 }
 
 static int
-test_insert(struct bp_root *root, record *records, ulong *keys, ulong entries, int mask)
+test_insert(struct bpt_root *root, record *records, ulong *keys, ulong entries, int mask)
 {
 	char method[64] = {'\0'};
 	struct timespec a, b;
@@ -88,7 +88,7 @@ test_insert(struct bp_root *root, record *records, ulong *keys, ulong entries, i
 	shuffle(keys, entries, sizeof(ulong), mask);
 
 	for (i = 0; i < entries; i++)
-		records[i].val = keys[i];
+		records[i].key = keys[i];
 
 	if (mask & 0x1)
 		strncpy(method, "ascending", sizeof(method));
@@ -99,7 +99,7 @@ test_insert(struct bp_root *root, record *records, ulong *keys, ulong entries, i
 
 	for (i = 0, max_nsec = 0, d = 0; i < entries; i++) {
 		time_now(&a);
-		rv = bp_po_insert(root, &records[i]);
+		rv = bpt_po_insert(root, &records[i]);
 		time_now(&b);
 
 		diff = time_diff(&a, &b);
@@ -111,7 +111,7 @@ test_insert(struct bp_root *root, record *records, ulong *keys, ulong entries, i
 		/* Failed to insert. */
 		if (rv) {
 			fprintf(stdout, "error to insert: %lu, already exists: %d\n",
-				records[i].val, bp_lookup(root, records[i].val, NULL) ? 1:0);
+				records[i].key, bpt_lookup(root, records[i].key, NULL) ? 1:0);
 			return -1;
 		}
 	}
@@ -120,13 +120,13 @@ test_insert(struct bp_root *root, record *records, ulong *keys, ulong entries, i
 	/* average */
 	d = d / i;
 	fprintf(stdout, "insert(%s): %lu nano/s, %f micro/s, max: %lu nsec, tree high: %d\n",
-		method, d, (float) d / 1000, max_nsec, bp_high(root->node));
+		method, d, (float) d / 1000, max_nsec, bpt_high(root->node));
 #endif
 	return 0;
 }
 
 static int
-test_lookup(struct bp_root *root, ulong *keys, ulong entries, int mask)
+test_lookup(struct bpt_root *root, ulong *keys, ulong entries, int mask)
 {
 	char method[64] = {'\0'};
 	struct timespec a, b;
@@ -149,7 +149,7 @@ test_lookup(struct bp_root *root, ulong *keys, ulong entries, int mask)
 
 	for (i = 0, max_nsec = 0, d = 0; i < entries; i++) {
 		time_now(&a);
-		r = bp_lookup(root, keys[i], NULL);
+		r = bpt_lookup(root, keys[i], NULL);
 		time_now(&b);
 
 		diff = time_diff(&a, &b);
@@ -169,13 +169,13 @@ test_lookup(struct bp_root *root, ulong *keys, ulong entries, int mask)
 	/* average */
 	d = d / i;
 	fprintf(stdout, "lookup(%s): %lu nano/s, %f micro/s, max: %lu nsec, tree high: %d\n",
-		method, d, (float) d / 1000, max_nsec, bp_high(root->node));
+		method, d, (float) d / 1000, max_nsec, bpt_high(root->node));
 #endif
 	return 0;
 }
 
 static int
-test_delete(struct bp_root *root, ulong *array, ulong entries, int mask)
+test_delete(struct bpt_root *root, ulong *array, ulong entries, int mask)
 {
 	char method[64] = {'\0'};
 	struct timespec a, b;
@@ -198,7 +198,7 @@ test_delete(struct bp_root *root, ulong *array, ulong entries, int mask)
 
 	for (i = 0, max_nsec = 0, d = 0; i < entries; i++) {
 		time_now(&a);
-		r = bp_po_delete(root, array[i]);
+		r = bpt_po_delete(root, array[i]);
 		time_now(&b);
 
 		diff = time_diff(&a, &b);
@@ -218,7 +218,7 @@ test_delete(struct bp_root *root, ulong *array, ulong entries, int mask)
 	/* average */
 	d = d / i;
 	fprintf(stdout, "delete(%s): %lu nano/s, %f micro/s, max: %lu nsec, tree high: %d\n",
-		method, d, (float) d / 1000, max_nsec, bp_high(root->node));
+		method, d, (float) d / 1000, max_nsec, bpt_high(root->node));
 #endif
 	return 0;
 }
@@ -226,13 +226,13 @@ test_delete(struct bp_root *root, ulong *array, ulong entries, int mask)
 static void
 do_sanity_check(void)
 {
-	struct bp_root root;
+	struct bpt_root root;
 	struct record *records;
 	ulong *keys;
 	unsigned long max_entries;
 	int rv, i;
 
-	rv = bp_root_init(&root);
+	rv = bpt_root_init(&root);
 	if (rv < 0)
 		assert(0);
 
@@ -256,11 +256,11 @@ do_sanity_check(void)
 		if (test_insert(&root, records, keys, rnd_entries, rand_mask(3)))
 			BUG();
 
-		r = bp_po_delete(&root, val);
+		r = bpt_po_delete(&root, val);
 		if (!r)
 			BUG();
 
-		if (bp_po_insert(&root, r))
+		if (bpt_po_insert(&root, r))
 			BUG();
 
 		if (val & 0x1) {
@@ -278,7 +278,7 @@ do_sanity_check(void)
 			BUG();
 	}
 
-	bp_root_destroy(&root);
+	bpt_root_destroy(&root);
 }
 
 int main(int argc, char **argv)

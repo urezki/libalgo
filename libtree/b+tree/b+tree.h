@@ -38,17 +38,17 @@ enum tree_properties {
 };
 
 enum {
-	BP_TYPE_INTER = 1,
-	BP_TYPE_EXTER = 2,
+	BPN_TYPE_INTER = 1,
+	BPN_TYPE_EXTER = 2,
 };
 
 /* Aliases. */
 #define SUB_LINKS page.internal.sub_links
 
 /* A common node structure. */
-struct node {
+struct bpn {
 	struct {
-		struct node *parent;
+		struct bpn *parent;
 		u8 parent_key_idx;
 		u8 type;
 	} info;
@@ -65,7 +65,7 @@ struct node {
 	union {
 		struct {				/* internal/index nodes. */
 			ulong sub_max_size[MAX_CHILDREN];
-			struct node *sub_links[MAX_CHILDREN];
+			struct bpn *sub_links[MAX_CHILDREN];
 		} internal;
 
 		struct {				/* leaf nodes. */
@@ -78,14 +78,14 @@ struct node {
 #endif
 };
 
-struct bp_root {
-	struct node *node;
+struct bpt_root {
+	struct bpn *node;
 	struct list_head head;
 };
 
 /* Payload data. */
 typedef struct record {
-	unsigned long val;
+	unsigned long key;
 } record;
 
 /*
@@ -97,32 +97,32 @@ static inline int split(int x)
 }
 
 static __always_inline bool
-is_node_internal(struct node *n)
+is_bpn_internal(struct bpn *n)
 {
-	return n->info.type == BP_TYPE_INTER;
+	return n->info.type == BPN_TYPE_INTER;
 }
 
 static __always_inline bool
-is_node_external(struct node *n)
+is_bpn_external(struct bpn *n)
 {
-	return n->info.type == BP_TYPE_EXTER;
+	return n->info.type == BPN_TYPE_EXTER;
 }
 
 static __always_inline bool
-is_node_full(struct node *n)
+is_bpn_full(struct bpn *n)
 {
 	return (n->entries == MAX_ENTRIES);
 }
 
 static __always_inline int
-node_min_entries(struct node *n)
+bpn_min_entries(struct bpn *n)
 {
-	return is_node_internal(n) ?
+	return is_bpn_internal(n) ?
 		MIN_ENTRIES_INTER:MIN_ENTRIES_EXTER;
 }
 
 static __always_inline int
-nr_sub_entries(struct node *n)
+bpn_nr_sub_entries(struct bpn *n)
 {
 	return n->entries + 1;
 }
@@ -135,75 +135,60 @@ nr_sub_entries(struct node *n)
  * from a node, i.e. for a leaf a record contains the key.
  */
 static __always_inline ulong
-get_slot_key(struct node *n, int pos)
+get_bpn_key(struct bpn *n, int pos)
 {
-	if (is_node_external(n))
-		return ((record *) n->slot[pos])->val;
+	if (is_bpn_external(n))
+		return ((record *) n->slot[pos])->key;
 
 	/* It is internal. */
 	return n->slot[pos];
+}
+
+static __always_inline void *
+get_bpn_val(struct bpn *n, int pos)
+{
+	if (is_bpn_external(n))
+		return (record *) n->slot[pos];
+
+	return NULL;
 }
 
 /*
  * Removing or adding does not unbalance a node.
  */
 static inline bool
-is_node_safe(struct node *n)
+is_bpn_safe(struct bpn *n)
 {
-	int min_entries = node_min_entries(n);
+	int min_entries = bpn_min_entries(n);
 	return (n->entries > min_entries && n->entries != MAX_ENTRIES);
 }
 
 static inline bool
-is_node_gt_min(struct node *n)
+is_bpn_gt_min(struct bpn *n)
 {
-	int min_entries = node_min_entries(n);
+	int min_entries = bpn_min_entries(n);
 	return (n->entries > min_entries);
 }
 
-static inline struct node *
-bp_prev_node_or_null(struct node *n, struct list_head *head)
-{
-	struct list_head *prev;
-
-	prev = list_prev_or_null(&n->page.external.list, head);
-	if (prev)
-		return list_entry(prev, struct node, page.external.list);
-
-	return NULL;
-}
-
-static inline struct node *
-bp_next_node_or_null(struct node *n, struct list_head *head)
-{
-	struct list_head *next;
-
-	next = list_next_or_null(&n->page.external.list, head);
-	if (next)
-		return list_entry(next, struct node, page.external.list);
-
-	return NULL;
-}
-
-static inline struct node *
-bp_get_left_child(struct node *parent, int pos)
+static inline struct bpn *
+bpn_get_left(struct bpn *parent, int pos)
 {
 	return (pos < parent->entries) ?
 		parent->SUB_LINKS[pos]:parent->SUB_LINKS[pos - 1];
 }
 
-static inline struct node *
-bp_get_right_child(struct node *parent, int pos)
+static inline struct bpn *
+bpn_get_right(struct bpn *parent, int pos)
 {
 	return (pos < parent->entries) ?
 		parent->SUB_LINKS[pos + 1]:parent->SUB_LINKS[pos];
 }
 
-static inline int bp_high(struct node *n)
+static inline int bpt_high(struct bpn *n)
 {
 	int h = 0;
 
-	while (is_node_internal(n)) {
+	while (is_bpn_internal(n)) {
 		n = n->SUB_LINKS[0];
 		h++;
 	}
@@ -212,21 +197,21 @@ static inline int bp_high(struct node *n)
 }
 
 static inline void
-check_node_geometry(struct node *n)
+check_bpn_geometry(struct bpn *n)
 {
 	if (!n->info.parent)
 		return;
 
-	if (is_node_internal(n))
+	if (is_bpn_internal(n))
 		BUG_ON(n->entries < MIN_ENTRIES_INTER);
 	else
 		BUG_ON(n->entries < MIN_ENTRIES_EXTER);
 }
 
-extern int bp_root_init(struct bp_root *);
-extern void bp_root_destroy(struct bp_root *);
-extern int bp_po_insert(struct bp_root *, record *);
-extern record *bp_po_delete(struct bp_root *, ulong);
-extern record *bp_lookup(struct bp_root *, ulong, int *);
+extern int bpt_root_init(struct bpt_root *);
+extern void bpt_root_destroy(struct bpt_root *);
+extern int bpt_po_insert(struct bpt_root *, record *);
+extern record *bpt_po_delete(struct bpt_root *, ulong);
+extern record *bpt_lookup(struct bpt_root *, ulong, int *);
 
 #endif
