@@ -29,10 +29,10 @@ typedef unsigned char u8;
  * minimum keys:     (m - 1) / 2 = 3
  */
 enum tree_properties {
-	TREE_ORDER = 4,
-	MAX_ENTRIES = (TREE_ORDER - 1),
-	MAX_CHILDREN = (TREE_ORDER),
-	MIN_CHILDREN = (TREE_ORDER >> 1),
+	BPT_ORDER = 4,
+	MAX_ENTRIES = (BPT_ORDER - 1),
+	MAX_CHILDREN = (BPT_ORDER),
+	MIN_CHILDREN = (BPT_ORDER >> 1),
 	MIN_ENTRIES_EXTER = MAX_ENTRIES >> 1,
 	MIN_ENTRIES_INTER = MIN_CHILDREN - 1,
 };
@@ -43,7 +43,7 @@ enum {
 };
 
 /* Aliases. */
-#define SUB_LINKS page.internal.sub_links
+#define SUB_LINKS page.internal.subl
 
 /* A common node structure. */
 struct bpn {
@@ -65,7 +65,7 @@ struct bpn {
 	union {
 		struct {				/* internal/index nodes. */
 			ulong sub_max_size[MAX_CHILDREN];
-			struct bpn *sub_links[MAX_CHILDREN];
+			void *subl[MAX_CHILDREN];
 		} internal;
 
 		struct {				/* leaf nodes. */
@@ -122,7 +122,7 @@ bpn_min_entries(struct bpn *n)
 }
 
 static __always_inline int
-bpn_nr_sub_entries(struct bpn *n)
+nr_sub_entries(struct bpn *n)
 {
 	return n->entries + 1;
 }
@@ -135,7 +135,7 @@ bpn_nr_sub_entries(struct bpn *n)
  * from a node, i.e. for a leaf a record contains the key.
  */
 static __always_inline ulong
-get_bpn_key(struct bpn *n, int pos)
+bpn_get_key(struct bpn *n, int pos)
 {
 	if (is_bpn_external(n))
 		return ((record *) n->slot[pos])->key;
@@ -145,7 +145,7 @@ get_bpn_key(struct bpn *n, int pos)
 }
 
 static __always_inline void *
-get_bpn_val(struct bpn *n, int pos)
+bpn_get_val(struct bpn *n, int pos)
 {
 	if (is_bpn_external(n))
 		return (record *) n->slot[pos];
@@ -211,7 +211,7 @@ check_bpn_geometry(struct bpn *n)
 extern int bpt_root_init(struct bpt_root *);
 extern void bpt_root_destroy(struct bpt_root *);
 extern int bpt_po_insert(struct bpt_root *, record *);
-extern record *bpt_po_delete(struct bpt_root *, ulong);
-extern record *bpt_lookup(struct bpt_root *, ulong, int *);
+extern void *bpt_po_delete(struct bpt_root *, ulong);
+extern void *bpt_lookup(struct bpt_root *, ulong, int *);
 
 #endif

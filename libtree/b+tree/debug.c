@@ -13,7 +13,7 @@ build_graph(struct bpn *n)
 	if (is_bpn_external(n)) {
 		printf("\tnode%lu[label = \"", n->num);
 		for (i = 0; i < n->entries; i++)
-			printf("%lu ", get_bpn_key(n, i));
+			printf("%lu ", bpn_get_key(n, i));
 
 		printf("\"];\n");
 		return;
@@ -21,13 +21,13 @@ build_graph(struct bpn *n)
 
 	printf("\tnode%lu[label = \"<p0>", n->num);
 	for (i = 0; i < n->entries; i++)
-		printf(" |%lu| <p%d>", (unsigned long) get_bpn_key(n, i), i + 1);
+		printf(" |%lu| <p%d>", (unsigned long) bpn_get_key(n, i), i + 1);
 
 	printf("\"];\n");
 
 	for (i = 0; i <= n->entries; i++)
 		printf("\t\"node%lu\":p%d -> \"node%lu\"\n",
-			n->num, i, n->SUB_LINKS[i]->num);
+			n->num, i, ((struct bpn *) n->SUB_LINKS[i])->num);
 
 	for (i = 0; i <= n->entries; i++)
 		build_graph(n->SUB_LINKS[i]);
