@@ -45,12 +45,14 @@ array_copy(void *dst, void *src, size_t n)
 static __always_inline void
 slot_insert(struct bpn *n, size_t pos, ulong val)
 {
+	BUG_ON(pos >= MAX_ENTRIES);
 	array_insert(n->slot, pos, n->entries, val);
 }
 
 static __always_inline void
 slot_remove(struct bpn *n, size_t pos)
 {
+	BUG_ON(pos >= MAX_ENTRIES);
 	array_remove(n->slot, pos, n->entries);
 }
 
@@ -69,6 +71,7 @@ slot_copy(struct bpn *dst, size_t i, struct bpn *src, size_t j, size_t entries)
 static __always_inline void
 subl_insert(struct bpn *n, size_t pos, void *val)
 {
+	BUG_ON(pos >= MAX_CHILDREN);
 	array_insert(n->SUB_LINKS, pos, nr_sub_entries(n), (ulong) val);
 }
 

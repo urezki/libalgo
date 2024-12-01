@@ -50,15 +50,16 @@ assign_node_id(struct bpn *n, int *num)
 	}
 }
 
-void dump_tree(struct bpn *root)
+void dump_tree(struct bpt_root *root)
 {
+	struct bpn *node = root->node;
 	int num = 0;
 
-	assign_node_id(root, &num);
+	assign_node_id(node, &num);
 
 	fprintf(stdout, "digraph G\n{\n");
 	fprintf(stdout, "node [shape = record,height=.1];\n");
-	build_graph(root);
+	build_graph(node);
 	fprintf(stdout, "}\n");
 
 	fprintf(stdout, "# run: ./test | dot -Tpng -o btree.png\n");
