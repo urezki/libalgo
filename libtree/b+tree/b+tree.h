@@ -64,7 +64,6 @@ struct bpn {
 	 */
 	union {
 		struct {				/* internal/index nodes. */
-			ulong sub_max_size[MAX_CHILDREN];
 			void *subl[MAX_CHILDREN];
 		} internal;
 

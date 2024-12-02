@@ -1,7 +1,7 @@
 # Mafifile
 
 CC = gcc
-CFLAGS = -Wall -D_GNU_SOURCE -std=c99 -I./ -DDEBUG_BP_TREE
+CFLAGS = -O3 -Wall -D_GNU_SOURCE -std=c99 -I./ -DDEBUG_BP_TREE
 #DEBUG_CFLAGS = -O0 -g -fsanitize=bounds-strict -fsanitize=address -static-libasan
 
 BINARY = test
