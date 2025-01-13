@@ -250,9 +250,13 @@ do_sanity_check(void)
 
 	for (i = 0; i < 1000000; i++) {
 		unsigned long rnd_entries = rand() % max_entries;
-		ulong val = keys[rand() % rnd_entries];
 		struct vmap_area *va;
+		ulong val;
 
+		if (!rnd_entries)
+			rnd_entries = 1;
+
+		val = keys[rand() % rnd_entries];
 		fprintf(stdout, "-> Start exercise tree on %lu size...\n", rnd_entries);
 
 		if (test_insert(&root, areas, keys, rnd_entries, rand_mask(3)))
