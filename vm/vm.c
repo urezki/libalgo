@@ -141,10 +141,15 @@ bpn_try_shift_left(struct bpn *l, struct bpn *r, struct bpn *p, int pos)
 		l->slot[l->entries] = p->slot[pos];
 		p->slot[pos] = r->slot[0];
 
+		/* Update links. */
 		l->SUB_LINKS[l->entries + 1] = r->SUB_LINKS[0];
 		subl_move(r, 0, 1);
 
-		/* TODO: update the metadata. */
+		/* Update sub-avail. */
+		l->SUB_AVAIL[l->entries + 1] = r->SUB_AVAIL[0];
+		suba_move(r, 0, 1);
+
+		/* Update sub-parent. */
 		((struct bpn *) l->SUB_LINKS[l->entries + 1])->info.parent = l;
 	} else {
 		l->slot[l->entries] = r->slot[0];
@@ -184,8 +189,9 @@ bpn_try_shift_right(struct bpn *l, struct bpn *r, struct bpn *p, int pos)
 	if (is_bpn_internal(l)) {
 		slot_insert(r, 0, p->slot[pos]);
 		subl_insert(r, 0, l->SUB_LINKS[l->entries]);
+		suba_insert(r, 0, l->SUB_AVAIL[l->entries]);
+
 		((struct bpn *) r->SUB_LINKS[0])->info.parent = r;
-		/* TODO: update the metadata. */
 	} else {
 		slot_insert(r, 0, l->slot[l->entries - 1]);
 	}

@@ -93,4 +93,17 @@ suba_copy(struct bpn *dst, size_t i, struct bpn *src, size_t j, size_t entries)
 	array_copy(dst->SUB_AVAIL + i, src->SUB_AVAIL + j, entries);
 }
 
+static __always_inline void
+suba_insert(struct bpn *n, size_t pos, ulong val)
+{
+	BUG_ON(pos >= MAX_CHILDREN);
+	array_insert(n->SUB_AVAIL, pos, nr_sub_entries(n), val);
+}
+
+static __always_inline void
+suba_move(struct bpn *n, size_t i, size_t j)
+{
+	array_move(n->SUB_AVAIL, i, j, nr_sub_entries(n));
+}
+
 #endif

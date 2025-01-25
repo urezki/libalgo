@@ -30,7 +30,7 @@ typedef unsigned char u8;
  * minimum keys:     (m - 1) / 2 = 3
  */
 enum tree_properties {
-	BPT_ORDER = 65,
+	BPT_ORDER = 24,
 	MAX_ENTRIES = (BPT_ORDER - 1),
 	MAX_CHILDREN = (BPT_ORDER),
 	MIN_CHILDREN = (BPT_ORDER >> 1),
