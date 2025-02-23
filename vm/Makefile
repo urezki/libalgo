@@ -1,10 +1,12 @@
 # Mafifile
 
 CC = gcc
-DEFAULT_CFLAGS = -Wall -Warray-bounds -D_GNU_SOURCE -std=c99 -I./ -DDEBUG_BP_TREE
-CFLAGS = -O0 ${DEFAULT_CFLAGS}
+DEFAULT_CFLAGS = -Wall -Warray-bounds -D_GNU_SOURCE \
+	-std=c99 -I./ -DDEBUG_BP_TREE -lpthread
+
+CFLAGS = -O0 -g ${DEFAULT_CFLAGS}
 # CFLAGS = -O3 ${DEFAULT_CFLAGS}
-# DEBUG_CFLAGS = -O0 -g -fsanitize=bounds-strict -fsanitize=address -static-libasan ${DEFAULT_CFLAGS}
+# DEBUG_CFLAGS = -g -fsanitize=bounds-strict -fsanitize=address -static-libasan ${DEFAULT_CFLAGS} -DDEBUG
 
 BINARY = test
 SRC = $(wildcard *.c)

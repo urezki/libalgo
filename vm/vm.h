@@ -8,6 +8,8 @@
 #include "list.h"
 
 typedef unsigned char u8;
+#define ULONG_MAX (~0UL)
+#define PAGE_SIZE (4096UL)
 
 #define __must_check __attribute__((warn_unused_result))
 #define likely(x)   __builtin_expect((ulong) (x), 1)
@@ -16,6 +18,9 @@ typedef unsigned char u8;
 #define BUG() *((char *) 0) = 0xff
 #define BUG_ON(cond) do { if (unlikely(cond)) BUG(); } while (0)
 #define ALIGN(x, a)	(((x) + (a) - 1) & ~((a) - 1))
+
+#define VMALLOC_START 0xffffb30940000000UL
+#define VMALLOC_END 0xffffd3093fffffffUL
 
 /*
  * The standard definition of order for a tree is the maximum
@@ -30,7 +35,7 @@ typedef unsigned char u8;
  * minimum keys:     (m - 1) / 2 = 3
  */
 enum tree_properties {
-	BPT_ORDER = 24,
+	BPT_ORDER = 24,			/* MAX 256. */
 	MAX_ENTRIES = (BPT_ORDER - 1),
 	MAX_CHILDREN = (BPT_ORDER),
 	MIN_CHILDREN = (BPT_ORDER >> 1),
@@ -91,31 +96,6 @@ typedef struct vmap_area {
 	unsigned long va_end;
 } vmap_area;
 
-static __always_inline ulong
-va_size(struct vmap_area *va)
-{
-	return va->va_end - va->va_start;
-}
-
-static inline bool
-is_within_this_va(struct vmap_area *va, ulong size,
-	ulong align, ulong vstart)
-{
-	ulong nva_start_addr;
-
-	if (va->va_start > vstart)
-		nva_start_addr = ALIGN(va->va_start, align);
-	else
-		nva_start_addr = ALIGN(vstart, align);
-
-	/* Can be overflowed due to big size or alignment. */
-	if (nva_start_addr + size < nva_start_addr ||
-			nva_start_addr < vstart)
-		return false;
-
-	return (nva_start_addr + size <= va->va_end);
-}
-
 /*
  * Halve an index with adjustment for odd numbers.
  */
@@ -175,7 +155,7 @@ bpn_get_key(struct bpn *n, int pos)
 static __always_inline void *
 bpn_get_val(struct bpn *n, int pos)
 {
-	if (is_bpn_external(n))
+	if (likely(is_bpn_external(n)))
 		return (vmap_area *) n->slot[pos];
 
 	return NULL;
@@ -236,11 +216,145 @@ check_bpn_geometry(struct bpn *n)
 		BUG_ON(n->entries < MIN_ENTRIES_EXTER);
 }
 
+static __always_inline ulong
+va_size(struct vmap_area *va)
+{
+	return va->va_end - va->va_start;
+}
+
+static __always_inline bool
+is_within_this_va(struct vmap_area *va, ulong size,
+	ulong align, ulong vstart)
+{
+	ulong nva_start_addr;
+
+	if (va->va_start > vstart)
+		nva_start_addr = ALIGN(va->va_start, align);
+	else
+		nva_start_addr = ALIGN(vstart, align);
+
+	/* Can be overflowed due to big size or alignment. */
+	if (nva_start_addr + size < nva_start_addr ||
+			nva_start_addr < vstart)
+		return false;
+
+	return (nva_start_addr + size <= va->va_end);
+}
+
+static __always_inline int
+validate_insert_req(struct bpn *n, int pos, vmap_area *va)
+{
+	BUG_ON(pos >= MAX_ENTRIES);
+
+	/* Check __alive__ entries for duplicates. */
+	if (pos < n->entries)
+		if (unlikely(bpn_get_key(n, pos) == va->va_start))
+			return -1;
+
+	return 0;
+}
+
+static inline struct bpn *
+leaf_next_or_null(struct bpt_root *root, struct bpn *n)
+{
+	struct list_head *next;
+
+	if (likely(is_bpn_external(n))) {
+		next = list_next_or_null(&n->page.external.list, &root->head);
+		if (next)
+			return list_entry(next, struct bpn, page.external.list);
+	}
+
+	return NULL;
+}
+
+static inline struct bpn *
+leaf_prev_or_null(struct bpt_root *root, struct bpn *n)
+{
+	struct list_head *prev;
+
+	if (likely(is_bpn_external(n))) {
+		prev = list_prev_or_null(&n->page.external.list, &root->head);
+		if (prev)
+			return list_entry(prev, struct bpn, page.external.list);
+	}
+
+	return NULL;
+}
+
+static inline struct vmap_area *
+leaf_next_first_entry(struct bpt_root *root, struct bpn *n)
+{
+	n = leaf_next_or_null(root, n);
+	if (n)
+		return bpn_get_val(n, 0);
+
+	return NULL;
+}
+
+static inline struct vmap_area *
+leaf_prev_last_entry(struct bpt_root *root, struct bpn *n)
+{
+	n = leaf_prev_or_null(root, n);
+	if (n)
+		return bpn_get_val(n, n->entries - 1);
+
+	return NULL;
+}
+
+/* Position condition codes. */
+typedef enum {
+	POS_CC_EQ = 0,					/* key = mkey */
+	POS_CC_LT = 1,					/* key < mkey */
+	POS_CC_GT = 2,					/* key > mkey */
+} pos_cc_t;
+
+/*
+ * Returns an index j, such that array[j-1] < key <= array[j].
+ * Example, array = 3 4 6 7, if key=5 then j=2, if key=8, j=4.
+ */
+static __always_inline pos_cc_t
+bpn_bin_search(struct bpn *n, ulong key, int *pos)
+{
+	pos_cc_t pos_cc;
+	int l, r;
+
+	check_bpn_geometry(n);
+
+	l = -1;
+	r = n->entries;
+
+	/* invariant: a[lo] < key <= a[hi] */
+	while (l + 1 < r) {
+		int m = (l + r) >> 1;
+		(bpn_get_key(n, m) < key) ? (l = m):(r = m);
+	}
+
+	if (r < n->entries) {
+		if (bpn_get_key(n, r) == key)
+			pos_cc = POS_CC_EQ;
+		else
+			pos_cc = POS_CC_LT;
+	} else {
+		pos_cc = POS_CC_GT;
+	}
+
+	*pos = r;
+	return pos_cc;
+}
+
 extern int bpt_root_init(struct bpt_root *);
 extern void bpt_root_destroy(struct bpt_root *);
 extern int bpt_po_insert(struct bpt_root *, vmap_area *);
-extern void *bpt_po_delete(struct bpt_root *, ulong);
+extern struct vmap_area *bpt_po_delete(struct bpt_root *, ulong);
 extern void *bpt_lookup(struct bpt_root *, ulong, int *);
-extern struct vmap_area *bpt_lookup_smallest(struct bpt_root *, ulong, ulong);
+
+extern bool bpn_try_shift_right(struct bpn *, struct bpn *,
+		struct bpn *, int);
+extern bool bpn_try_shift_left(struct bpn *, struct bpn *,
+		struct bpn *, int);
+
+/* Temp. */
+extern int verify_meta_data(struct bpt_root *root);
 
 #endif

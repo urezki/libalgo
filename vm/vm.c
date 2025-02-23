@@ -3,6 +3,7 @@
 #include <assert.h>
 
 #include "vm.h"				/* Main header */
+#include "vm_ops.h"
 #include "array.h"
 
 static struct bpn *
@@ -21,80 +22,28 @@ bpn_calloc_init(u8 type)
 	return n;
 }
 
-static ulong
-bpn_max_avail(struct bpn *n)
-{
-	ulong avail = 0;
-	int i;
-
-	if (is_bpn_internal(n)) {
-		for (i = 0; i < n->entries + 1; i++) {
-			if (n->SUB_AVAIL[i] > avail)
-				avail = n->SUB_AVAIL[i];
-		}
-	} else {
-		/* Open up all VAs in a node(cache misses). */
-		for (i = 0; i < n->entries; i++) {
-			struct vmap_area *va = bpn_get_val(n, i);
-
-			if (va_size(va) > avail)
-				avail = va_size(va);
-		}
-	}
-
-	return avail;
-}
-
-/* Position condition codes. */
-typedef enum {
-	POS_CC_EQ = 0,					/* key = mkey */
-	POS_CC_LT = 1,					/* key < mkey */
-	POS_CC_GT = 2,					/* key > mkey */
-} pos_cc_t;
-
-/*
- * Returns an index j, such that array[j-1] < key <= array[j].
- * Example, array = 3 4 6 7, if key=5 then j=2, if key=8, j=4.
- */
-static __always_inline pos_cc_t
-bpn_bin_search(struct bpn *n, ulong key, int *pos)
-{
-	pos_cc_t pos_cc;
-	int l, r;
-
-	check_bpn_geometry(n);
-
-	l = -1;
-	r = n->entries;
-
-	/* invariant: a[lo] < key <= a[hi] */
-	while (l + 1 < r) {
-		int m = (l + r) >> 1;
-		(bpn_get_key(n, m) < key) ? (l = m):(r = m);
-	}
-
-	if (r < n->entries) {
-		if (bpn_get_key(n, r) == key)
-			pos_cc = POS_CC_EQ;
-		else
-			pos_cc = POS_CC_LT;
-	} else {
-		pos_cc = POS_CC_GT;
-	}
-
-	*pos = r;
-	return pos_cc;
-}
-
 static __always_inline int
 bpn_insert_to_leaf(struct bpn *n, int pos, vmap_area *va)
 {
+	struct vmap_area *sibling;
+
 	BUG_ON(pos >= MAX_ENTRIES);
 
-	/* Check __alive__ entries for duplicates. */
-	if (pos < n->entries)
-		if (unlikely(bpn_get_key(n, pos) == va->va_start))
+	/* Sanity check for the right. */
+	if (pos < n->entries) {
+		sibling = bpn_get_val(n, pos);
+
+		if (unlikely(va->va_end > sibling->va_start))
 			return -1;
+	}
+
+	/* Sanity check for the left. */
+	if (pos > 0) {
+		sibling = bpn_get_val(n, pos - 1);
+
+		if (unlikely(va->va_start < sibling->va_end))
+			return -1;
+	}
 
 	slot_insert(n, pos, (ulong) va);
 	n->entries++;
@@ -121,7 +70,7 @@ vmap_area *bpn_remove_from_leaf(struct bpn *n, int pos, ulong key)
 /*
  * NOTE: it does not introduce dis-balance to left nor right nodes!
  */
-static bool
+bool
 bpn_try_shift_left(struct bpn *l, struct bpn *r, struct bpn *p, int pos)
 {
 	/* Adjust position. */
@@ -170,7 +119,7 @@ bpn_try_shift_left(struct bpn *l, struct bpn *r, struct bpn *p, int pos)
  *
  * NOTE: it does not introduce dis-balance to left nor right nodes!
  */
-static bool
+bool
 bpn_try_shift_right(struct bpn *l, struct bpn *r, struct bpn *p, int pos)
 {
 	/* Adjust position. */
@@ -236,12 +185,15 @@ bpn_merge_siblings(struct bpn *p, int pos)
 		l->entries += r->entries;
 	}
 
-	/* Fix the parent. */
+	/* Shrink it. -1 element in the parent. */
 	slot_move(p, pos, pos + 1);
 	subl_move(p, pos + 1, pos + 2);
+	suba_move(p, pos + 1, pos + 2);
+	/* suba_move(p, pos, pos + 1); */
+	/* printf("-> update SUB_AVAIL: copy to %d from %d pos\n", pos + 1, pos + 2); */
+
 	p->entries--;
 	free(r);
-
 	return l;
 }
 
@@ -358,25 +310,28 @@ bpn_split_root(struct bpn *root)
 	return new_root;
 }
 
-static struct bpn *
-bpt_insert_non_full(struct bpt_root *root, vmap_area *va)
+static int
+bpt_insert_non_full(struct bpt_root *root, struct vmap_area *va)
 {
 	struct bpn *n = root->node;
 	struct bpn *p;
 	pos_cc_t pos_cc;
-	int pos;
+	bool merged;
+	int pos, rv;
 
 	while (is_bpn_internal(n)) {
 		pos_cc = bpn_bin_search(n, va->va_start, &pos);
-		n->info.ppos = pos;
 		p = n;
 
-		if (pos_cc == POS_CC_EQ)
-			/* follow right direction. */
+		if (pos_cc == POS_CC_EQ) {
+			/* Follow right. */
+			n->info.ppos = pos + 1;
 			n = n->SUB_LINKS[pos + 1];
-		else
-			/* follow left direction. */
+		} else {
+			/* Follow left. */
+			n->info.ppos = pos;
 			n = n->SUB_LINKS[pos];
+		}
 
 		if (is_bpn_full(n)) {
 			/*
@@ -384,10 +339,7 @@ bpt_insert_non_full(struct bpt_root *root, vmap_area *va)
 			 * the separator key from the child node(n). The key
 			 * is inserted into "pos" position of the parent(p).
 			 */
-			if (pos_cc == POS_CC_EQ)
-				bpn_split(n, p, pos + 1);
-			else
-				bpn_split(n, p, pos);
+			bpn_split(n, p, pos_cc == POS_CC_EQ ? pos + 1 : pos);
 
 			/*
 			 * Please note, after split and updating the parent(p)
@@ -396,35 +348,23 @@ bpt_insert_non_full(struct bpt_root *root, vmap_area *va)
 			 * route.
 			 */
 			if (va->va_start >= p->slot[pos]) {
-				p->info.ppos = pos + 1;
 				n = p->SUB_LINKS[pos + 1];
+				p->info.ppos = pos + 1;
 			}
 		}
 	}
 
 	/* It is guaranteed "n" is not full. */
 	(void) bpn_bin_search(n, va->va_start, &pos);
-	return !bpn_insert_to_leaf(n, pos, va) ? n : NULL;
-}
+	merged = try_merge_va(root, n, va, pos);
 
-static void
-update_metadata(struct bpn *node)
-{
-	struct bpn *parent;
-	ulong max_avail;
-	u8 child_index;
-
-	while (node->info.parent) {
-		parent = node->info.parent;
-		child_index = parent->info.ppos;
-
-		max_avail = bpn_max_avail(node);
-		if (parent->SUB_AVAIL[child_index] == max_avail)
-			break;
-
-		parent->SUB_AVAIL[child_index] = max_avail;
-		node = parent;
+	if (!merged) {
+		rv = bpn_insert_to_leaf(n, pos, va);
+		if (!rv)
+			fixup_metadata(n);
 	}
+
+	return (merged || !rv) ? 0 : -1;
 }
 
 int bpt_po_insert(struct bpt_root *root, vmap_area *va)
@@ -440,11 +380,7 @@ int bpt_po_insert(struct bpt_root *root, vmap_area *va)
 		root->node = n;
 	}
 
-	n = bpt_insert_non_full(root, va);
-	if (n)
-		update_metadata(n);
-
-	return n ? 0 : -1;
+	return bpt_insert_non_full(root, va);
 }
 
 static inline struct bpn *
@@ -482,30 +418,6 @@ void *bpt_lookup(struct bpt_root *root, ulong val, int *out_pos)
 	return pos_cc == POS_CC_EQ ? bpn_get_val(n, pos) : NULL;
 }
 
-/*
- * If success, it return a leaf that satisfies va->va_start >= vstart
- * condition, also it guarantees that there is a VA that is equal or
- * greater of given "size". Otherwise the most right(last) leaf is
- * returned.
- */
-static struct bpn *
-bpt_lookup_lowest_leaf(struct bpn *n, ulong size, ulong vstart)
-{
-	int i;
-
-	/* Find a leaf. */
-	while (is_bpn_internal(n)) {
-		for (i = 0; i < n->entries; i++) {
-			if (vstart < n->slot[i] && n->SUB_AVAIL[i] >= size)
-				break;
-		}
-
-		n = n->SUB_LINKS[i];
-	}
-
-	return n;
-}
-
 static inline struct vmap_area *
 leaf_get_va_cond(struct bpn *n, ulong size, ulong align, ulong vstart)
 {
@@ -524,62 +436,12 @@ leaf_get_va_cond(struct bpn *n, ulong size, ulong align, ulong vstart)
 	return NULL;
 }
 
-static inline struct vmap_area *
-leaf_next_first_entry(struct bpt_root *root, struct bpn *n)
-{
-	struct list_head *next;
-	struct vmap_area *va;
-
-	if (likely(is_bpn_external(n))) {
-		next = list_next_or_null(&n->page.external.list, &root->head);
-		if (next) {
-			n = list_entry(next, struct bpn, page.external.list);
-			va = bpn_get_val(n, 0);
-			return va;
-		}
-	}
-
-	return NULL;
-}
-
-struct vmap_area *
-bpt_lookup_smallest(struct bpt_root *root, ulong size, ulong vstart)
-{
-	struct bpn *n = root->node;
-	struct vmap_area *va;
-
-	while (n) {
-		/* Find a leaf. */
-		n = bpt_lookup_lowest_leaf(root->node, size, vstart);
-
-		/* Check found leaf if it accomplishes a request. */
-		va = leaf_get_va_cond(n, size, 1, vstart);
-		if (va)
-			return va;
-
-		/*
-		 * No. Reasons:
-		 * - "vstart" restriction;
-		 * - alignment overhead(greater then PAGE_SIZE);
-		 * - no VA available for a given size.
-		 */
-		va = leaf_next_first_entry(root, n);
-		if (!va)
-			break;
-
-		/*
-		 * Update "vstart" to avoid already checked sub-tree.
-		 */
-		vstart = va->va_start;
-	}
-
-	return NULL;
-}
-
 /* Preemptive overflow delete operation. */
-void *bpt_po_delete(struct bpt_root *root, ulong val)
+struct vmap_area *
+bpt_po_delete(struct bpt_root *root, ulong val)
 {
 	struct bpn *n = root->node;
+	struct vmap_area *va = NULL;
 	struct bpn *parent = NULL;
 	pos_cc_t pos_cc;
 	int pos;
@@ -596,10 +458,13 @@ void *bpt_po_delete(struct bpt_root *root, ulong val)
 		/*
 		 * If true, "r->val" is located in a right sub-tree.
 		 */
-		if (pos_cc == POS_CC_EQ)
+		if (pos_cc == POS_CC_EQ) {
+			n->info.ppos = pos + 1;
 			n = n->SUB_LINKS[pos + 1];
-		else
+		} else {
+			n->info.ppos = pos;
 			n = n->SUB_LINKS[pos];
+		}
 
 		if (is_bpn_gt_min(n))
 			continue;
@@ -607,6 +472,8 @@ void *bpt_po_delete(struct bpt_root *root, ulong val)
 		{
 			struct bpn *l = bpn_get_left(parent, pos);
 			struct bpn *r = bpn_get_right(parent, pos);
+			int lpos = (pos < parent->entries) ? pos : pos - 1;
+			int rpos = (pos < parent->entries) ? pos + 1 : pos;
 			bool balanced;
 
 			if (l == n)
@@ -614,9 +481,14 @@ void *bpt_po_delete(struct bpt_root *root, ulong val)
 			else
 				balanced = bpn_try_shift_right(l, r, parent, pos);
 
-			/* Need merging. */
-			if (!balanced) {
+			if (balanced) {
+				parent->SUB_AVAIL[lpos] = bpn_max_avail(l);
+				parent->SUB_AVAIL[rpos] = bpn_max_avail(r);
+			} else {
+				/* Need merging. */
 				n = bpn_merge_siblings(parent, pos);
+				parent->SUB_AVAIL[lpos] = bpn_max_avail(n);
+				parent->info.ppos = lpos;
 
 				/* Set a new parent. Can be a leaf node only. */
 				if (!parent->entries && parent == root->node) {
@@ -629,10 +501,13 @@ void *bpt_po_delete(struct bpt_root *root, ulong val)
 	}
 
 	/* Success. */
-	if (pos_cc == POS_CC_EQ)
-		return bpn_remove_from_leaf(n, pos, val);
+	va = (pos_cc == POS_CC_EQ) ?
+		bpn_remove_from_leaf(n, pos, val) : NULL;
 
-	return NULL;
+	if (va)
+		fixup_metadata(n);
+
+	return va;
 }
 
 int bpt_root_init(struct bpt_root *root)
